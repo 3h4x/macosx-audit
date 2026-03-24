@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# macOS Security Audit Script
+# Checks for persistence mechanisms, suspicious processes, network activity,
+# shell injections, and system hardening status.
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+WARNINGS=0
+FINDINGS=()
+
+header() { echo -e "\n${CYAN}${BOLD}=== $1 ===${NC}"; }
+ok() { echo -e "  ${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "  ${YELLOW}[!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+=("$1"); }
+fail() { echo -e "  ${RED}[!!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+=("[CRITICAL] $1"); }
+info() { echo -e "  ${DIM}[-]${NC} $1"; }
+
+echo -e "${BOLD}macOS Security Audit${NC} — $(date '+%Y-%m-%d %H:%M:%S')"
+echo -e "${DIM}Host: $(hostname) | User: $(whoami) | macOS $(sw_vers -productVersion)${NC}"
+
+# ─── System Hardening ───
+
+header "System Hardening"
+
+if csrutil status 2>&1 | grep -q "enabled"; then
+  ok "System Integrity Protection (SIP) enabled"
+else
+  fail "SIP is DISABLED — malware can modify system files"
+fi
+
+if spctl --status 2>&1 | grep -q "enabled"; then
+  ok "Gatekeeper enabled"
+else
+  warn "Gatekeeper disabled — unsigned apps can run freely"
+fi
+
+if fdesetup status 2>&1 | grep -q "On"; then
+  ok "FileVault disk encryption enabled"
+else
+  warn "FileVault OFF — disk is not encrypted"
+fi
+
+if [[ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" -ge 1 ]]; then
+  ok "macOS Firewall enabled"
+else
+  warn "macOS Firewall disabled"
+fi
+
+# ─── LaunchAgents & LaunchDaemons ───
+
+header "Persistence: LaunchAgents & LaunchDaemons"
+
+KNOWN_AGENTS=(
+  "com.apple."
+  "com.google."
+  "com.malwarebytes."
+  "com.docker."
+  "at.obdev.littlesnitch"
+  "com.rogueamoeba."
+  "homebrew.mxcl."
+  "us.zoom."
+  "com.native-instruments."
+  "com.microsoft."
+  "com.adobe."
+  "com.spotify."
+  "org.mozilla."
+  "com.1password."
+  "com.brave."
+  "SessionManagerPlugin"
+)
+
+check_plist_dir() {
+  local dir="$1"
+  local label="$2"
+  if [[ ! -d "$dir" ]]; then return; fi
+
+  for plist in "$dir"/*.plist; do
+    [[ -f "$plist" ]] || continue
+    local name
+    name=$(basename "$plist" .plist)
+    local known=false
+
+    for prefix in "${KNOWN_AGENTS[@]}"; do
+      if [[ "$name" == "$prefix"* ]]; then
+        known=true
+        break
+      fi
+    done
+
+    # Extract the program from the plist
+    local program
+    program=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$plist" 2>/dev/null || \
+              /usr/libexec/PlistBuddy -c "Print :Program" "$plist" 2>/dev/null || echo "unknown")
+
+    if $known; then
+      info "${label}: ${name} -> ${program}"
+    else
+      warn "${label} UNKNOWN: ${name} -> ${program}"
+      echo -e "      ${DIM}File: ${plist}${NC}"
+      echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
+    fi
+  done
+}
+
+check_plist_dir "$HOME/Library/LaunchAgents" "User Agent"
+check_plist_dir "/Library/LaunchAgents" "System Agent"
+check_plist_dir "/Library/LaunchDaemons" "System Daemon"
+
+# ─── Cron Jobs ───
+
+header "Persistence: Cron & At Jobs"
+
+cron_out=$(crontab -l 2>&1)
+if [[ "$cron_out" == *"no crontab"* ]]; then
+  ok "No user crontab"
+else
+  warn "User crontab exists:"
+  echo "$cron_out" | while read -r line; do echo "      $line"; done
+fi
+
+if [[ -f /etc/crontab ]]; then
+  warn "/etc/crontab exists"
+else
+  ok "No /etc/crontab"
+fi
+
+at_out=$(atq 2>&1)
+if [[ -z "$at_out" ]]; then
+  ok "No at jobs"
+else
+  warn "at jobs found:"
+  echo "$at_out" | while read -r line; do echo "      $line"; done
+fi
+
+# ─── MDM / Configuration Profiles ───
+
+header "Persistence: Configuration Profiles"
+
+profiles_out=$(profiles list 2>&1)
+if echo "$profiles_out" | grep -q "no configuration profiles"; then
+  ok "No MDM/configuration profiles installed"
+else
+  warn "Configuration profiles found:"
+  echo "$profiles_out" | while read -r line; do echo "      $line"; done
+fi
+
+# ─── Shell Profiles ───
+
+header "Shell Profile Integrity"
+
+SHELL_FILES=(
+  "$HOME/.zshrc"
+  "$HOME/.zprofile"
+  "$HOME/.zshenv"
+  "$HOME/.zlogin"
+  "$HOME/.bashrc"
+  "$HOME/.bash_profile"
+  "$HOME/.profile"
+)
+
+SUSPICIOUS_PATTERNS=(
+  "curl.*|.*sh"
+  "wget.*|.*sh"
+  "curl.*|.*bash"
+  "base64.*decode"
+  "eval.*\$(curl"
+  "eval.*\$(wget"
+  "/dev/tcp/"
+  "nc -e"
+  "ncat.*-e"
+  "mkfifo"
+  "openssl.*s_client"
+)
+
+for f in "${SHELL_FILES[@]}"; do
+  [[ -f "$f" ]] || continue
+  local_suspicious=false
+  for pat in "${SUSPICIOUS_PATTERNS[@]}"; do
+    if grep -qE "$pat" "$f" 2>/dev/null; then
+      fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+      local_suspicious=true
+    fi
+  done
+  if ! $local_suspicious; then
+    info "$(basename "$f") — clean ($(wc -l < "$f" | tr -d ' ') lines)"
+  fi
+done
+
+# Check sourced directories
+if [[ -d "$HOME/.zshrc.d" ]]; then
+  for f in "$HOME/.zshrc.d"/*; do
+    [[ -f "$f" ]] || continue
+    for pat in "${SUSPICIOUS_PATTERNS[@]}"; do
+      if grep -qE "$pat" "$f" 2>/dev/null; then
+        fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+      fi
+    done
+  done
+  info ".zshrc.d/ — $(ls "$HOME/.zshrc.d" | wc -l | tr -d ' ') files checked"
+fi
+
+# ─── Environment Variables ───
+
+header "Environment Injection"
+
+dyld_vars=$(env | grep -iE '^DYLD_INSERT|^DYLD_FORCE|^DYLD_PRINT' 2>/dev/null || true)
+if [[ -n "$dyld_vars" ]]; then
+  fail "DYLD injection variables set:"
+  echo "$dyld_vars" | while read -r line; do echo "      $line"; done
+else
+  ok "No DYLD injection variables"
+fi
+
+proxy_vars=$(env | grep -iE '^http_proxy=|^https_proxy=|^all_proxy=|^socks_proxy=' 2>/dev/null || true)
+if [[ -n "$proxy_vars" ]]; then
+  warn "Proxy variables set (verify these are intentional):"
+  echo "$proxy_vars" | while read -r line; do echo "      $line"; done
+else
+  ok "No proxy hijack variables"
+fi
+
+ld_vars=$(env | grep -iE '^LD_PRELOAD=' 2>/dev/null || true)
+if [[ -n "$ld_vars" ]]; then
+  fail "LD_PRELOAD set: $ld_vars"
+else
+  ok "No LD_PRELOAD"
+fi
+
+# ─── Kernel/System Extensions ───
+
+header "Kernel & System Extensions"
+
+kext_count=$(ls /Library/Extensions/ 2>/dev/null | grep -c '.kext$' || echo 0)
+if [[ "$kext_count" -gt 0 ]]; then
+  info "$kext_count kernel extension(s) in /Library/Extensions:"
+  ls /Library/Extensions/*.kext 2>/dev/null | while read -r k; do echo "      $(basename "$k")"; done
+else
+  ok "No third-party kernel extensions"
+fi
+
+sysext_out=$(systemextensionsctl list 2>&1)
+if echo "$sysext_out" | grep -q "0 extension"; then
+  ok "No system extensions"
+else
+  info "System extensions:"
+  echo "$sysext_out" | grep -E "^\*|bundleID" | while read -r line; do echo "      $line"; done
+fi
+
+# ─── Authorization Plugins ───
+
+header "Authorization Plugins"
+
+auth_plugins=$(ls /Library/Security/SecurityAgentPlugins/ 2>/dev/null | head -20)
+if [[ -z "$auth_plugins" ]]; then
+  ok "No authorization plugins"
+else
+  warn "Authorization plugins found:"
+  echo "$auth_plugins" | while read -r line; do echo "      $line"; done
+fi
+
+# ─── SSH ───
+
+header "SSH Access"
+
+if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+  key_count=$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$HOME/.ssh/authorized_keys" 2>/dev/null || echo 0)
+  if [[ "$key_count" -gt 0 ]]; then
+    warn "$key_count SSH authorized key(s) — verify these are yours:"
+    while read -r line; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      echo "      ${line: -60}"
+    done < "$HOME/.ssh/authorized_keys"
+  else
+    ok "authorized_keys exists but empty"
+  fi
+else
+  ok "No authorized_keys file"
+fi
+
+# ─── Unsigned Processes ───
+
+header "Process Integrity"
+
+info "Checking for unsigned or suspicious processes..."
+unsigned_count=0
+
+while IFS= read -r line; do
+  pid=$(echo "$line" | awk '{print $1}')
+  comm=$(echo "$line" | awk '{print $2}')
+  [[ "$pid" == "PID" || -z "$comm" ]] && continue
+  # Skip kernel and system processes
+  [[ "$comm" == "-" || "$comm" == "/kernel" ]] && continue
+
+  sig_check=$(codesign -dv "$comm" 2>&1 || true)
+  if echo "$sig_check" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
+    warn "Unsigned/invalid process: PID=$pid $comm"
+    unsigned_count=$((unsigned_count + 1))
+  fi
+done < <(ps -eo pid,comm 2>/dev/null | tail -n +2)
+
+if [[ "$unsigned_count" -eq 0 ]]; then
+  ok "All running processes have valid signatures"
+fi
+
+# ─── Processes from unusual paths ───
+
+header "Process Paths"
+
+info "Checking for processes outside standard locations..."
+unusual_count=0
+
+while IFS= read -r line; do
+  pid=$(echo "$line" | awk '{print $1}')
+  comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+  [[ -z "$comm" ]] && continue
+
+  # Skip known safe paths
+  if echo "$comm" | grep -qE '^/(System|Library|Applications|usr|sbin|bin|opt/homebrew|private|cores)/'; then
+    continue
+  fi
+  # Skip known user paths
+  if echo "$comm" | grep -qE '^\.(nvm|vscode|cache|foundry|local/bin|cargo)/|/node_modules/|claude|npm'; then
+    continue
+  fi
+  # Skip processes without a path
+  if [[ "$comm" != /* && "$comm" != .* ]]; then
+    continue
+  fi
+
+  info "Non-standard path: PID=$pid $comm"
+  unusual_count=$((unusual_count + 1))
+done < <(ps -eo pid,comm 2>/dev/null | tail -n +2)
+
+if [[ "$unusual_count" -eq 0 ]]; then
+  ok "All processes running from standard locations"
+fi
+
+# ─── Network ───
+
+header "Network: Listening Ports"
+
+while IFS= read -r line; do
+  proc=$(echo "$line" | awk '{print $1}')
+  pid=$(echo "$line" | awk '{print $2}')
+  addr=$(echo "$line" | awk '{print $9}')
+  info "LISTEN $addr ($proc, PID $pid)"
+done < <(lsof -i -nP 2>/dev/null | grep LISTEN)
+
+header "Network: Established Connections"
+
+declare -A CONN_PROCS
+while IFS= read -r line; do
+  proc=$(echo "$line" | awk '{print $1}')
+  dest=$(echo "$line" | awk '{print $9}' | sed 's/.*->//')
+  key="${proc}|${dest%:*}"
+  if [[ -z "${CONN_PROCS[$key]:-}" ]]; then
+    CONN_PROCS[$key]=1
+    info "${proc} -> ${dest}"
+  fi
+done < <(lsof -i -nP 2>/dev/null | grep ESTABLISHED)
+
+# ─── Docker ───
+
+header "Docker Containers"
+
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  container_count=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$container_count" -gt 0 ]]; then
+    info "$container_count running container(s):"
+    docker ps --format "      {{.Names}}: {{.Image}} ({{.Ports}})" 2>/dev/null
+  else
+    ok "No running containers"
+  fi
+else
+  info "Docker not running or not installed"
+fi
+
+# ─── Summary ───
+
+echo ""
+echo -e "${BOLD}─── Summary ───${NC}"
+echo ""
+
+if [[ "$WARNINGS" -eq 0 ]]; then
+  echo -e "${GREEN}${BOLD}No issues found.${NC} System looks clean."
+else
+  echo -e "${YELLOW}${BOLD}${WARNINGS} finding(s):${NC}"
+  for f in "${FINDINGS[@]}"; do
+    echo -e "  ${YELLOW}-${NC} $f"
+  done
+fi
+
+echo ""
+echo -e "${DIM}Scan completed at $(date '+%H:%M:%S')${NC}"

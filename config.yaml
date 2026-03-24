@@ -1,0 +1,60 @@
+# macOS Security Audit Configuration
+#
+# Each check can be enabled (true) or disabled (false).
+# Checks requiring elevated privileges are marked and disabled by default.
+
+# --- Core checks (no special permissions) ---
+system_hardening: true
+launch_agents: true
+cron_jobs: true
+mdm_profiles: true
+shell_profiles: true
+env_injection: true
+extensions: true
+auth_plugins: true
+ssh_access: true
+process_integrity: true
+process_paths: true
+network_listening: true
+network_established: true
+docker: true
+
+# --- Persistence & integrity ---
+periodic_scripts: true        # /etc/periodic/ custom scripts
+folder_actions: true          # ~/Library/Workflows/Applications/Folder Actions/
+privileged_helpers: true      # /Library/PrivilegedHelperTools/ signature verification
+xprotect_status: true         # XProtect version and last update
+login_items: true             # Login items (limited without root)
+
+# --- Supply chain ---
+supply_chain: true            # VS Code extensions, npm globals, brew taps, MCP servers, pip
+
+# --- Configuration abuse ---
+ssh_config: true              # ~/.ssh/config ProxyCommand, forwarding (CVE-2025-61984)
+git_hooks: true               # Global and workspace git hooks
+path_security: true           # World-writable or missing PATH directories
+dns_proxy: true               # DNS resolver and system proxy settings
+
+# --- Network ---
+suspicious_ports: true        # Flag known backdoor ports (4444, 5555, 1337, etc.)
+reverse_dns: false            # Reverse DNS on connections (adds latency, off by default)
+
+# --- Deep checks (round 2) ---
+temp_executables: true        # Executables/scripts in /tmp, /var/tmp
+sudoers: true                 # sudoers NOPASSWD entries, PAM module tampering
+browser_extensions: true      # Chrome, Brave, Firefox, Safari extension audit
+hidden_files: true            # Suspicious hidden files, extended attributes
+reverse_shells: true          # Active reverse shell detection
+system_integrity: true        # Code signatures on critical system binaries
+launchctl_state: true         # Running launchd services vs plist files
+dylib_injection: true         # DYLD hijacking beyond env vars
+dns_tunneling: true           # DNS-based C2 indicators
+recently_modified: true       # Recently modified system files (last 7 days)
+process_spoofing: true        # Process name vs binary path mismatch
+promiscuous_interfaces: true  # Network interfaces in promiscuous mode
+deleted_running: true         # Processes running from deleted files
+
+# --- Requires elevated privileges ---
+# These checks need root/sudo. Enable with --root flag or set to true here.
+tcc_permissions: false        # TCC database: camera, mic, screen recording grants (requires Full Disk Access)
+btm_dump: false               # sfltool dumpbtm: full Background Task Management audit (requires root)

@@ -1,9 +1,22 @@
-#!/usr/bin/env bash
+#!/opt/homebrew/bin/bash
 set -euo pipefail
 
 # macOS Security Audit Script
 # Checks for persistence mechanisms, suspicious processes, network activity,
-# shell injections, and system hardening status.
+# shell injections, supply chain risks, and system hardening status.
+#
+# Requires: bash 4+ (for associative arrays), macOS builtins
+# Usage: security-audit [--config=PATH] [--all] [--root] [--check=NAME] [--list] [--help]
+
+# ─── Bash version check ───
+
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "Error: bash 4+ required (you have ${BASH_VERSION})"
+  echo "Install with: brew install bash"
+  exit 1
+fi
+
+# ─── Colors & output helpers ───
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,40 +35,167 @@ warn() { echo -e "  ${YELLOW}[!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+
 fail() { echo -e "  ${RED}[!!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+=("[CRITICAL] $1"); }
 info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
-echo -e "${BOLD}macOS Security Audit${NC} — $(date '+%Y-%m-%d %H:%M:%S')"
-echo -e "${DIM}Host: $(hostname) | User: $(whoami) | macOS $(sw_vers -productVersion)${NC}"
+# ─── Check registry ───
 
-# ─── System Hardening ───
+CHECKS=(system_hardening launch_agents cron_jobs mdm_profiles shell_profiles
+  env_injection extensions auth_plugins ssh_access process_integrity
+  process_paths network_listening network_established docker
+  periodic_scripts folder_actions privileged_helpers login_items
+  xprotect_status supply_chain ssh_config git_hooks path_security
+  dns_proxy suspicious_ports reverse_dns
+  temp_executables sudoers browser_extensions hidden_files reverse_shells
+  system_integrity launchctl_state dylib_injection dns_tunneling
+  recently_modified process_spoofing promiscuous_interfaces deleted_running
+  tcc_permissions btm_dump)
 
-header "System Hardening"
+# ─── Configuration ───
 
-if csrutil status 2>&1 | grep -q "enabled"; then
-  ok "System Integrity Protection (SIP) enabled"
-else
-  fail "SIP is DISABLED — malware can modify system files"
+declare -A CONFIG
+
+parse_config() {
+  local file="$1"
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    if [[ "$line" =~ ^([a-z_]+):[[:space:]]*(true|false) ]]; then
+      CONFIG["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+    fi
+  done < "$file"
+}
+
+check_enabled() {
+  local name="$1"
+  if [[ -n "${SINGLE_CHECK:-}" ]]; then
+    [[ "$name" == "$SINGLE_CHECK" ]] && return 0 || return 1
+  fi
+  if $RUN_ALL; then return 0; fi
+  if [[ "$name" == "tcc_permissions" || "$name" == "btm_dump" ]]; then
+    if $RUN_ROOT; then return 0; fi
+    [[ "${CONFIG[$name]:-false}" == "true" ]] && return 0 || return 1
+  fi
+  [[ "${CONFIG[$name]:-true}" == "true" ]] && return 0 || return 1
+}
+
+# ─── CLI arguments ───
+
+CONFIG_FILE=""
+RUN_ALL=false
+RUN_ROOT=false
+SINGLE_CHECK=""
+
+show_help() {
+  cat <<'HELP'
+Usage: security-audit [OPTIONS]
+
+Options:
+  --config=PATH   Use specified config file (default: auto-detect)
+  --all           Enable all checks (including root-requiring)
+  --root          Enable checks that require elevated privileges
+  --check=NAME    Run only the specified check
+  --list          List all available checks and exit
+  --help          Show this help and exit
+
+Config search order:
+  1. --config=PATH (if specified)
+  2. ./config.yaml
+  3. ~/.config/macosx-audit/config.yaml
+  4. <script_dir>/config.yaml
+  5. Built-in defaults (all non-root checks enabled)
+HELP
+  exit 0
+}
+
+list_checks() {
+  echo -e "${BOLD}Available checks:${NC}"
+  echo ""
+  echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
+  for name in system_hardening launch_agents cron_jobs mdm_profiles shell_profiles \
+    env_injection extensions auth_plugins ssh_access process_integrity \
+    process_paths network_listening network_established docker; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  echo ""
+  echo -e "  ${CYAN}Persistence & integrity:${NC}"
+  for name in periodic_scripts folder_actions privileged_helpers xprotect_status login_items; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  echo ""
+  echo -e "  ${CYAN}Supply chain:${NC}"
+  local status="on"
+  [[ "${CONFIG[supply_chain]:-true}" == "false" ]] && status="off"
+  echo -e "    supply_chain  ${DIM}[${status}]${NC}"
+  echo ""
+  echo -e "  ${CYAN}Configuration abuse:${NC}"
+  for name in ssh_config git_hooks path_security dns_proxy; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  echo ""
+  echo -e "  ${CYAN}Network:${NC}"
+  for name in suspicious_ports reverse_dns; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  echo ""
+  echo -e "  ${CYAN}Deep checks (round 2):${NC}"
+  for name in temp_executables sudoers browser_extensions hidden_files reverse_shells \
+    system_integrity launchctl_state dylib_injection dns_tunneling \
+    recently_modified process_spoofing promiscuous_interfaces deleted_running; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  echo ""
+  echo -e "  ${CYAN}Elevated privileges (disabled by default):${NC}"
+  for name in tcc_permissions btm_dump; do
+    local status="off"
+    [[ "${CONFIG[$name]:-false}" == "true" ]] && status="on"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
+  exit 0
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --config=*) CONFIG_FILE="${arg#--config=}" ;;
+    --all) RUN_ALL=true; RUN_ROOT=true ;;
+    --root) RUN_ROOT=true ;;
+    --check=*) SINGLE_CHECK="${arg#--check=}" ;;
+    --list) ;;
+    --help) show_help ;;
+    *) echo "Unknown option: $arg"; show_help ;;
+  esac
+done
+
+# Find and parse config file
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "$CONFIG_FILE" ]]; then
+  if [[ -f "$CONFIG_FILE" ]]; then
+    parse_config "$CONFIG_FILE"
+  else
+    echo "Config file not found: $CONFIG_FILE" >&2
+    exit 1
+  fi
+elif [[ -f "./config.yaml" ]]; then
+  parse_config "./config.yaml"
+elif [[ -f "$HOME/.config/macosx-audit/config.yaml" ]]; then
+  parse_config "$HOME/.config/macosx-audit/config.yaml"
+elif [[ -f "$SCRIPT_DIR/config.yaml" ]]; then
+  parse_config "$SCRIPT_DIR/config.yaml"
 fi
 
-if spctl --status 2>&1 | grep -q "enabled"; then
-  ok "Gatekeeper enabled"
-else
-  warn "Gatekeeper disabled — unsigned apps can run freely"
-fi
+# Handle --list after config is loaded
+for arg in "$@"; do
+  [[ "$arg" == "--list" ]] && list_checks
+done
 
-if fdesetup status 2>&1 | grep -q "On"; then
-  ok "FileVault disk encryption enabled"
-else
-  warn "FileVault OFF — disk is not encrypted"
-fi
-
-if [[ "$(defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null)" -ge 1 ]]; then
-  ok "macOS Firewall enabled"
-else
-  warn "macOS Firewall disabled"
-fi
-
-# ─── LaunchAgents & LaunchDaemons ───
-
-header "Persistence: LaunchAgents & LaunchDaemons"
+# ─── Constants ───
 
 KNOWN_AGENTS=(
   "com.apple."
@@ -76,310 +216,1526 @@ KNOWN_AGENTS=(
   "SessionManagerPlugin"
 )
 
-check_plist_dir() {
-  local dir="$1"
-  local label="$2"
-  if [[ ! -d "$dir" ]]; then return; fi
+APPLE_SYSTEM_PATHS=(
+  "/System/"
+  "/usr/libexec/"
+  "/usr/sbin/"
+  "/usr/bin/"
+  "/Library/Apple/"
+)
 
-  for plist in "$dir"/*.plist; do
-    [[ -f "$plist" ]] || continue
+SUSPECT_PORTS=(4444 5555 1337 31337 6666 6667 9001 8443 4443 3333 7777 1234 12345)
+
+# ─── Check functions ───
+
+check_system_hardening() {
+  header "System Hardening"
+
+  if csrutil status 2>&1 | grep -q "enabled"; then
+    ok "System Integrity Protection (SIP) enabled"
+  else
+    fail "SIP is DISABLED — malware can modify system files"
+  fi
+
+  if spctl --status 2>&1 | grep -q "enabled"; then
+    ok "Gatekeeper enabled"
+  else
+    warn "Gatekeeper disabled — unsigned apps can run freely"
+  fi
+
+  if fdesetup status 2>&1 | grep -q "On"; then
+    ok "FileVault disk encryption enabled"
+  else
+    warn "FileVault OFF — disk is not encrypted"
+  fi
+
+  if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q "enabled\|blocking"; then
+    ok "macOS Firewall enabled"
+  else
+    warn "macOS Firewall disabled"
+  fi
+}
+
+check_launch_agents() {
+  header "Persistence: LaunchAgents & LaunchDaemons"
+
+  _check_plist_dir() {
+    local dir="$1"
+    local label="$2"
+    if [[ ! -d "$dir" ]]; then return; fi
+
+    for plist in "$dir"/*.plist; do
+      [[ -f "$plist" ]] || continue
+      local name
+      name=$(basename "$plist" .plist)
+      local known=false
+
+      for prefix in "${KNOWN_AGENTS[@]}"; do
+        if [[ "$name" == "$prefix"* ]]; then
+          known=true
+          break
+        fi
+      done
+
+      local program
+      program=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$plist" 2>/dev/null || \
+                /usr/libexec/PlistBuddy -c "Print :Program" "$plist" 2>/dev/null || echo "unknown")
+
+      if $known; then
+        # Verify com.apple.* entries point to Apple system paths
+        if [[ "$name" == com.apple.* && "$program" != "unknown" ]]; then
+          local valid_path=false
+          for sys_path in "${APPLE_SYSTEM_PATHS[@]}"; do
+            if [[ "$program" == "$sys_path"* ]]; then
+              valid_path=true
+              break
+            fi
+          done
+          if ! $valid_path; then
+            warn "${label}: ${name} claims Apple but runs from non-system path: ${program}"
+            echo -e "      ${DIM}File: ${plist}${NC}"
+            echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
+          else
+            info "${label}: ${name} -> ${program}"
+          fi
+        else
+          info "${label}: ${name} -> ${program}"
+        fi
+      else
+        warn "${label} UNKNOWN: ${name} -> ${program}"
+        echo -e "      ${DIM}File: ${plist}${NC}"
+        echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
+      fi
+    done
+  }
+
+  _check_plist_dir "$HOME/Library/LaunchAgents" "User Agent"
+  _check_plist_dir "/Library/LaunchAgents" "System Agent"
+  _check_plist_dir "/Library/LaunchDaemons" "System Daemon"
+}
+
+check_cron_jobs() {
+  header "Persistence: Cron & At Jobs"
+
+  cron_out=$(crontab -l 2>&1)
+  if [[ "$cron_out" == *"no crontab"* ]]; then
+    ok "No user crontab"
+  else
+    warn "User crontab exists:"
+    echo "$cron_out" | while read -r line; do echo "      $line"; done
+  fi
+
+  if [[ -f /etc/crontab ]]; then
+    warn "/etc/crontab exists"
+  else
+    ok "No /etc/crontab"
+  fi
+
+  at_out=$(atq 2>&1)
+  if [[ -z "$at_out" ]]; then
+    ok "No at jobs"
+  else
+    warn "at jobs found:"
+    echo "$at_out" | while read -r line; do echo "      $line"; done
+  fi
+}
+
+check_mdm_profiles() {
+  header "Persistence: Configuration Profiles"
+
+  profiles_out=$(profiles list 2>&1)
+  if echo "$profiles_out" | grep -q "no configuration profiles"; then
+    ok "No MDM/configuration profiles installed"
+  else
+    warn "Configuration profiles found:"
+    echo "$profiles_out" | while read -r line; do echo "      $line"; done
+  fi
+}
+
+check_shell_profiles() {
+  header "Shell Profile Integrity"
+
+  local shell_files=(
+    "$HOME/.zshrc"
+    "$HOME/.zprofile"
+    "$HOME/.zshenv"
+    "$HOME/.zlogin"
+    "$HOME/.bashrc"
+    "$HOME/.bash_profile"
+    "$HOME/.profile"
+  )
+
+  local suspicious_patterns=(
+    'curl.*\|.*sh'
+    'wget.*\|.*sh'
+    'curl.*\|.*bash'
+    "base64.*decode"
+    'eval.*\$\(curl'
+    'eval.*\$\(wget'
+    "/dev/tcp/"
+    "nc -e"
+    "ncat.*-e"
+    "mkfifo"
+    "openssl.*s_client"
+  )
+
+  for f in "${shell_files[@]}"; do
+    [[ -f "$f" ]] || continue
+    local is_suspicious=false
+    for pat in "${suspicious_patterns[@]}"; do
+      if grep -qE "$pat" "$f" 2>/dev/null; then
+        fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+        is_suspicious=true
+      fi
+    done
+    if ! $is_suspicious; then
+      info "$(basename "$f") — clean ($(wc -l < "$f" | tr -d ' ') lines)"
+    fi
+  done
+
+  if [[ -d "$HOME/.zshrc.d" ]]; then
+    for f in "$HOME/.zshrc.d"/*; do
+      [[ -f "$f" ]] || continue
+      for pat in "${suspicious_patterns[@]}"; do
+        if grep -qE "$pat" "$f" 2>/dev/null; then
+          fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+        fi
+      done
+    done
+    info ".zshrc.d/ — $(ls "$HOME/.zshrc.d" | wc -l | tr -d ' ') files checked"
+  fi
+}
+
+check_env_injection() {
+  header "Environment Injection"
+
+  dyld_vars=$(env | grep -iE '^DYLD_INSERT|^DYLD_FORCE|^DYLD_PRINT' 2>/dev/null || true)
+  if [[ -n "$dyld_vars" ]]; then
+    fail "DYLD injection variables set:"
+    echo "$dyld_vars" | while read -r line; do echo "      $line"; done
+  else
+    ok "No DYLD injection variables"
+  fi
+
+  proxy_vars=$(env | grep -iE '^http_proxy=|^https_proxy=|^all_proxy=|^socks_proxy=' 2>/dev/null || true)
+  if [[ -n "$proxy_vars" ]]; then
+    warn "Proxy variables set (verify these are intentional):"
+    echo "$proxy_vars" | while read -r line; do echo "      $line"; done
+  else
+    ok "No proxy hijack variables"
+  fi
+
+  ld_vars=$(env | grep -iE '^LD_PRELOAD=' 2>/dev/null || true)
+  if [[ -n "$ld_vars" ]]; then
+    fail "LD_PRELOAD set: $ld_vars"
+  else
+    ok "No LD_PRELOAD"
+  fi
+}
+
+check_extensions() {
+  header "Kernel & System Extensions"
+
+  kext_count=$(ls /Library/Extensions/ 2>/dev/null | grep -c '.kext$' || true)
+  kext_count=${kext_count:-0}
+  if [[ "$kext_count" -gt 0 ]]; then
+    info "$kext_count kernel extension(s) in /Library/Extensions:"
+    ls /Library/Extensions/*.kext 2>/dev/null | while read -r k; do echo "      $(basename "$k")"; done
+  else
+    ok "No third-party kernel extensions"
+  fi
+
+  sysext_out=$(systemextensionsctl list 2>&1)
+  if echo "$sysext_out" | grep -q "0 extension"; then
+    ok "No system extensions"
+  else
+    info "System extensions:"
+    echo "$sysext_out" | grep -E "^\*|bundleID" | while read -r line; do echo "      $line"; done
+  fi
+}
+
+check_auth_plugins() {
+  header "Authorization Plugins"
+
+  auth_plugins=$(ls /Library/Security/SecurityAgentPlugins/ 2>/dev/null | head -20)
+  if [[ -z "$auth_plugins" ]]; then
+    ok "No authorization plugins"
+  else
+    warn "Authorization plugins found:"
+    echo "$auth_plugins" | while read -r line; do echo "      $line"; done
+  fi
+}
+
+check_ssh_access() {
+  header "SSH Access"
+
+  if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+    key_count=$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$HOME/.ssh/authorized_keys" 2>/dev/null || true)
+    key_count=${key_count:-0}
+    if [[ "$key_count" -gt 0 ]]; then
+      warn "$key_count SSH authorized key(s) — verify these are yours:"
+      while read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        echo "      ${line: -60}"
+      done < "$HOME/.ssh/authorized_keys"
+    else
+      ok "authorized_keys exists but empty"
+    fi
+  else
+    ok "No authorized_keys file"
+  fi
+}
+
+check_process_integrity() {
+  header "Process Integrity"
+
+  info "Checking for unsigned or suspicious processes..."
+  local unsigned_count=0
+
+  while IFS= read -r line; do
+    local pid comm binary
+    pid=$(echo "$line" | awk '{print $1}')
+    comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    [[ -z "$comm" ]] && continue
+    [[ "$comm" == "-" || "$comm" == "/kernel" ]] && continue
+    # Extract binary path (first word of args)
+    binary="${comm%% *}"
+    [[ "$binary" != /* ]] && continue
+    [[ -f "$binary" ]] || continue
+
+    sig_check=$(codesign -dv "$binary" 2>&1 || true)
+    if echo "$sig_check" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
+      warn "Unsigned/invalid process: PID=$pid $comm"
+      unsigned_count=$((unsigned_count + 1))
+    fi
+  done < <(ps -eo pid,args 2>/dev/null | tail -n +2)
+
+  if [[ "$unsigned_count" -eq 0 ]]; then
+    ok "All running processes have valid signatures"
+  fi
+}
+
+check_process_paths() {
+  header "Process Paths"
+
+  info "Checking for processes outside standard locations..."
+  local unusual_count=0
+
+  while IFS= read -r line; do
+    local pid comm binary
+    pid=$(echo "$line" | awk '{print $1}')
+    comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    [[ -z "$comm" ]] && continue
+    # Extract binary path (first word of args)
+    binary="${comm%% *}"
+
+    # Skip known safe paths
+    if echo "$binary" | grep -qE '^/(System|Library|Applications|usr|sbin|bin|opt/homebrew|private|cores)/'; then
+      continue
+    fi
+    # Skip known user paths
+    if echo "$binary" | grep -qE '^\.(nvm|vscode|cache|foundry|local/bin|cargo)/|/node_modules/|claude|npm'; then
+      continue
+    fi
+    # Skip processes without a path
+    if [[ "$binary" != /* && "$binary" != .* ]]; then
+      continue
+    fi
+
+    info "Non-standard path: PID=$pid $comm"
+    unusual_count=$((unusual_count + 1))
+  done < <(ps -eo pid,args 2>/dev/null | tail -n +2)
+
+  if [[ "$unusual_count" -eq 0 ]]; then
+    ok "All processes running from standard locations"
+  fi
+}
+
+check_network_listening() {
+  header "Network: Listening Ports"
+
+  while IFS= read -r line; do
+    local proc pid addr
+    proc=$(echo "$line" | awk '{print $1}')
+    pid=$(echo "$line" | awk '{print $2}')
+    addr=$(echo "$line" | awk '{print $9}')
+    info "LISTEN $addr ($proc, PID $pid)"
+  done < <(lsof -i -nP 2>/dev/null | grep LISTEN)
+}
+
+_identify_ip() {
+  local ip="$1"
+  # Strip IPv6 brackets
+  ip="${ip#\[}"
+  ip="${ip%\]}"
+
+  case "$ip" in
+    # Cloudflare
+    104.16.*|104.17.*|104.18.*|104.19.*|104.20.*|104.21.*|104.22.*|104.23.*|104.24.*|104.25.*|104.26.*|104.27.*) echo "Cloudflare" ;;
+    172.64.*|172.65.*|172.66.*|172.67.*|172.68.*|172.69.*|172.70.*|172.71.*) echo "Cloudflare" ;;
+    162.159.*) echo "Cloudflare" ;;
+    2606:4700:*|2606:4700::*) echo "Cloudflare" ;;
+    2607:6bc0::*) echo "Cloudflare" ;;
+    # Google
+    142.250.*|142.251.*|172.217.*|172.253.*|216.58.*|74.125.*|64.233.*) echo "Google" ;;
+    2a00:1450:*) echo "Google" ;;
+    # AWS
+    3.*|13.*|15.*|16.*|18.*|23.*|34.*|35.*|43.*|44.*|46.*|47.*|50.*|51.*|52.*|54.*|99.*|100.2[0-7].*) echo "AWS" ;;
+    # Telegram
+    149.154.16[4-9].*|149.154.17[0-5].*) echo "Telegram" ;;
+    # Apple
+    17.*) echo "Apple" ;;
+    2620:149:*) echo "Apple" ;;
+    # Microsoft/GitHub
+    20.*|40.*|52.*|13.10[4-7].*|140.82.1[1-2]*) echo "Microsoft" ;;
+    # Akamai
+    23.2[0-9].*|23.3[0-9].*|23.4[0-9].*|23.5[0-9].*|23.6[0-9].*) echo "Akamai" ;;
+    # Local link
+    fe80:*) echo "local-link" ;;
+    # Private
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) echo "private" ;;
+    127.*|::1) echo "localhost" ;;
+    *) echo "" ;;
+  esac
+}
+
+_identify_process() {
+  local proc="$1"
+  case "$proc" in
+    rapportd)   echo "AirDrop/Handoff discovery" ;;
+    identitys*) echo "Apple identity services" ;;
+    sharingd)   echo "AirDrop/sharing daemon" ;;
+    apsd)       echo "Apple Push Notification" ;;
+    cloudd)     echo "iCloud sync" ;;
+    nsurlsess*) echo "Apple URL session" ;;
+    AMPDeviceD*) echo "Apple Media" ;;
+    symptomsd)  echo "Apple network diagnostics" ;;
+    mDNSRespon*) echo "Bonjour/mDNS" ;;
+    CommCenter) echo "cellular/SIM services" ;;
+    parsecd)    echo "Siri suggestions" ;;
+    *)          echo "" ;;
+  esac
+}
+
+check_network_established() {
+  header "Network: Established Connections"
+
+  local do_rdns=false
+  check_enabled reverse_dns && do_rdns=true
+
+  declare -A conn_procs
+  while IFS= read -r line; do
+    local proc pid dest key
+    proc=$(echo "$line" | awk '{print $1}')
+    pid=$(echo "$line" | awk '{print $2}')
+    dest=$(echo "$line" | awk '{print $9}' | sed 's/.*->//')
+    key="${proc}|${dest%:*}"
+    if [[ -z "${conn_procs[$key]:-}" ]]; then
+      conn_procs[$key]=1
+      local ip="${dest%:*}"
+      local label
+      label=$(_identify_ip "$ip")
+      local proc_desc
+      proc_desc=$(_identify_process "$proc")
+
+      # Build display string
+      local display="${proc} (PID ${pid})"
+      [[ -n "$proc_desc" ]] && display="${proc} (${proc_desc}, PID ${pid})"
+      local target="${dest}"
+      if $do_rdns && [[ -z "$label" ]]; then
+        local hostname
+        hostname=$(host -W 1 "${ip#\[}" 2>/dev/null | awk '/domain name pointer/{print $NF}' | head -1)
+        [[ -n "$hostname" ]] && label="${hostname%.}"
+      fi
+      [[ -n "$label" ]] && target="${dest} [${label}]"
+
+      info "${display} -> ${target}"
+    fi
+  done < <(lsof -i -nP 2>/dev/null | grep ESTABLISHED)
+}
+
+check_docker() {
+  header "Docker Containers"
+
+  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    container_count=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$container_count" -gt 0 ]]; then
+      info "$container_count running container(s):"
+      docker ps --format "      {{.Names}}: {{.Image}} ({{.Ports}})" 2>/dev/null
+    else
+      ok "No running containers"
+    fi
+  else
+    info "Docker not running or not installed"
+  fi
+}
+
+# ─── Persistence & integrity checks ───
+
+check_periodic_scripts() {
+  header "Persistence: Periodic Scripts"
+
+  local found=0
+  for period in daily weekly monthly; do
+    local dir="/etc/periodic/$period"
+    [[ -d "$dir" ]] || continue
+    for f in "$dir"/*; do
+      [[ -f "$f" ]] || continue
+      local name
+      name=$(basename "$f")
+      if [[ ! "$name" =~ ^[0-9]{3}\. ]]; then
+        warn "Non-standard periodic script: $f"
+        found=$((found + 1))
+      else
+        info "Periodic/$period: $name"
+      fi
+    done
+  done
+  if [[ "$found" -eq 0 ]]; then
+    ok "No non-standard periodic scripts"
+  fi
+}
+
+check_folder_actions() {
+  header "Persistence: Folder Actions"
+
+  local fa_dir="$HOME/Library/Workflows/Applications/Folder Actions"
+  if [[ -d "$fa_dir" ]]; then
+    local count
+    count=$(find "$fa_dir" -name "*.workflow" -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$count" -gt 0 ]]; then
+      warn "$count Folder Action workflow(s) found:"
+      find "$fa_dir" -name "*.workflow" -type d 2>/dev/null | while read -r w; do
+        echo "      $(basename "$w")"
+      done
+    else
+      ok "No Folder Action workflows"
+    fi
+  else
+    ok "No Folder Actions directory"
+  fi
+}
+
+check_privileged_helpers() {
+  header "Persistence: Privileged Helper Tools"
+
+  local helper_dir="/Library/PrivilegedHelperTools"
+  if [[ ! -d "$helper_dir" ]]; then
+    ok "No PrivilegedHelperTools directory"
+    return
+  fi
+
+  local unsigned=0
+  local checked=0
+  for helper in "$helper_dir"/*; do
+    [[ -f "$helper" ]] || continue
     local name
-    name=$(basename "$plist" .plist)
-    local known=false
+    name=$(basename "$helper")
+    local sig
+    sig=$(codesign -dv "$helper" 2>&1 || true)
+    if echo "$sig" | grep -q "code object is not signed\|invalid signature"; then
+      fail "Unsigned privileged helper: $name"
+      unsigned=$((unsigned + 1))
+    else
+      local team
+      team=$(echo "$sig" | grep "TeamIdentifier=" | cut -d= -f2)
+      info "Helper: $name (Team: ${team:-unknown})"
+    fi
+    checked=$((checked + 1))
+  done
+  if [[ "$checked" -gt 0 && "$unsigned" -eq 0 ]]; then
+    ok "All privileged helpers are signed"
+  fi
+}
 
-    for prefix in "${KNOWN_AGENTS[@]}"; do
-      if [[ "$name" == "$prefix"* ]]; then
-        known=true
+check_xprotect_status() {
+  header "XProtect Status"
+
+  local xprotect_path="/Library/Apple/System/Library/CoreServices/XProtect.bundle"
+  if [[ ! -d "$xprotect_path" ]]; then
+    xprotect_path="/System/Library/CoreServices/XProtect.bundle"
+  fi
+
+  if [[ -d "$xprotect_path" ]]; then
+    local version
+    version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+      "$xprotect_path/Contents/Info.plist" 2>/dev/null || echo "unknown")
+    info "XProtect version: $version"
+
+    local meta_plist="$xprotect_path/Contents/Resources/XProtect.meta.plist"
+    if [[ -f "$meta_plist" ]]; then
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$meta_plist" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -gt 30 ]]; then
+        warn "XProtect data is ${age_days} days old — may be outdated"
+      else
+        ok "XProtect data updated ${age_days} day(s) ago"
+      fi
+    fi
+  else
+    warn "XProtect bundle not found"
+  fi
+}
+
+check_login_items() {
+  header "Login Items"
+
+  local items
+  items=$(osascript -e 'tell application "System Events" to get name of every login item' 2>/dev/null || echo "")
+  if [[ -n "$items" && "$items" != "" ]]; then
+    info "Login items: $items"
+  else
+    info "No login items visible (use --root with btm_dump for full coverage)"
+  fi
+}
+
+# ─── Supply chain checks ───
+
+check_supply_chain() {
+  header "Supply Chain"
+
+  # VS Code extensions
+  local vscode_dir="$HOME/.vscode/extensions"
+  if [[ -d "$vscode_dir" ]]; then
+    local ext_count
+    ext_count=$(ls -1d "$vscode_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    info "VS Code: $ext_count extension(s) installed"
+    local recent=0
+    while IFS= read -r ext; do
+      [[ -d "$ext" ]] || continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "VS Code extension installed <7 days ago: $(basename "$ext")"
+        recent=$((recent + 1))
+      fi
+    done < <(ls -1d "$vscode_dir"/*/ 2>/dev/null)
+    if [[ "$recent" -eq 0 ]]; then
+      ok "No recently installed VS Code extensions"
+    fi
+  fi
+
+  # npm globals
+  if command -v npm &>/dev/null; then
+    local npm_globals
+    npm_globals=$(npm list -g --depth=0 2>/dev/null | tail -n +2 | sed 's/[├└│─ ]//g' | grep -v '^$' || true)
+    if [[ -n "$npm_globals" ]]; then
+      local npm_count
+      npm_count=$(echo "$npm_globals" | wc -l | tr -d ' ')
+      info "npm global packages: $npm_count"
+      echo "$npm_globals" | while read -r pkg; do echo "      $pkg"; done
+    fi
+  fi
+
+  # Homebrew taps
+  if command -v brew &>/dev/null; then
+    local taps
+    taps=$(brew tap 2>/dev/null || true)
+    if [[ -n "$taps" ]]; then
+      while read -r tap; do
+        case "$tap" in
+          homebrew/core|homebrew/cask|homebrew/bundle|homebrew/services)
+            info "Brew tap: $tap (default)"
+            ;;
+          *)
+            warn "Non-default brew tap: $tap"
+            ;;
+        esac
+      done <<< "$taps"
+    fi
+  fi
+
+  # MCP servers
+  local mcp_configs=(
+    "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    "$HOME/.cursor/mcp.json"
+  )
+  for mcp_file in "${mcp_configs[@]}"; do
+    if [[ -f "$mcp_file" ]]; then
+      local server_count
+      server_count=$(grep -c '"command"' "$mcp_file" 2>/dev/null || true)
+      server_count=${server_count:-0}
+      if [[ "$server_count" -gt 0 ]]; then
+        warn "MCP config with $server_count server(s): $(basename "$(dirname "$mcp_file")")/$(basename "$mcp_file")"
+        grep '"command"' "$mcp_file" 2>/dev/null | while read -r line; do
+          echo "      $(echo "$line" | xargs)"
+        done
+      fi
+    fi
+  done
+
+  # pip user packages
+  if command -v pip3 &>/dev/null; then
+    local pip_user
+    pip_user=$(pip3 list --user 2>/dev/null | tail -n +3 || true)
+    if [[ -n "$pip_user" ]]; then
+      local pip_count
+      pip_count=$(echo "$pip_user" | wc -l | tr -d ' ')
+      info "pip user packages: $pip_count"
+    fi
+  fi
+}
+
+# ─── Configuration abuse checks ───
+
+check_ssh_config() {
+  header "SSH Config"
+
+  local ssh_config="$HOME/.ssh/config"
+  if [[ ! -f "$ssh_config" ]]; then
+    ok "No SSH config file"
+    return
+  fi
+
+  local issues=false
+
+  # ProxyCommand (CVE-2025-61984 vector)
+  local proxy_cmds
+  proxy_cmds=$(grep -in 'ProxyCommand' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$proxy_cmds" ]]; then
+    warn "SSH ProxyCommand found (potential CVE-2025-61984 vector):"
+    echo "$proxy_cmds" | while read -r line; do echo "      $line"; done
+    issues=true
+  fi
+
+  # SendEnv / SetEnv (data exfil vector)
+  local env_directives
+  env_directives=$(grep -in 'SendEnv\|SetEnv' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$env_directives" ]]; then
+    warn "SSH environment forwarding configured:"
+    echo "$env_directives" | while read -r line; do echo "      $line"; done
+    issues=true
+  fi
+
+  # Forwarding rules
+  local fwd_rules
+  fwd_rules=$(grep -in 'LocalForward\|RemoteForward\|DynamicForward' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$fwd_rules" ]]; then
+    info "SSH port forwarding rules:"
+    echo "$fwd_rules" | while read -r line; do echo "      $line"; done
+  fi
+
+  if ! $issues; then
+    ok "SSH config clean — no ProxyCommand or env forwarding"
+  fi
+}
+
+check_git_hooks() {
+  header "Git Hooks"
+
+  # Global hooks path
+  local global_hooks
+  global_hooks=$(git config --global core.hooksPath 2>/dev/null || true)
+  if [[ -n "$global_hooks" ]]; then
+    warn "Global git hooks path: $global_hooks"
+    if [[ -d "$global_hooks" ]]; then
+      for hook in "$global_hooks"/*; do
+        [[ -x "$hook" ]] || continue
+        info "  Hook: $(basename "$hook")"
+      done
+    fi
+  else
+    ok "No global git hooks path configured"
+  fi
+
+  # Scan workspace repos for active hooks
+  local hook_count=0
+  if [[ -d "$HOME/workspace" ]]; then
+    while IFS= read -r git_dir; do
+      local hooks_dir="$git_dir/hooks"
+      [[ -d "$hooks_dir" ]] || continue
+      for hook in "$hooks_dir"/*; do
+        [[ -x "$hook" ]] || continue
+        local name
+        name=$(basename "$hook")
+        [[ "$name" == *.sample ]] && continue
+        info "Workspace hook: ${hooks_dir#"$HOME"/} -> $name"
+        hook_count=$((hook_count + 1))
+      done
+    done < <(find "$HOME/workspace" -maxdepth 4 -name ".git" -type d 2>/dev/null)
+  fi
+
+  if [[ "$hook_count" -eq 0 ]]; then
+    ok "No active git hooks in workspace repos"
+  fi
+}
+
+check_path_security() {
+  header "PATH Security"
+
+  local issues=0
+  IFS=':' read -ra path_dirs <<< "$PATH"
+
+  for dir in "${path_dirs[@]}"; do
+    if [[ -z "$dir" ]]; then
+      fail "Empty PATH entry ('::') — current directory is in PATH"
+      issues=$((issues + 1))
+      continue
+    fi
+
+    if [[ ! -d "$dir" ]]; then
+      # Skip known Apple/system phantom paths
+      case "$dir" in
+        /var/run/com.apple.security.cryptexd/*|/opt/pmk/*)
+          continue ;;
+      esac
+      warn "PATH directory does not exist: $dir"
+      issues=$((issues + 1))
+      continue
+    fi
+
+    # Check world-writable
+    local perms
+    perms=$(stat -f '%Sp' "$dir" 2>/dev/null || true)
+    if [[ -n "$perms" && "${perms: -1}" == "w" ]]; then
+      warn "World-writable PATH directory: $dir ($perms)"
+      issues=$((issues + 1))
+    fi
+  done
+
+  if [[ "$issues" -eq 0 ]]; then
+    ok "PATH directories look secure"
+  fi
+}
+
+check_dns_proxy() {
+  header "DNS & Proxy Settings"
+
+  # DNS resolvers
+  local dns_out
+  dns_out=$(scutil --dns 2>/dev/null | grep 'nameserver\[' | sort -u || true)
+  if [[ -n "$dns_out" ]]; then
+    info "DNS resolvers:"
+    echo "$dns_out" | while read -r line; do
+      local ip
+      ip=$(echo "$line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+      [[ -z "$ip" ]] && continue
+      case "$ip" in
+        8.8.8.8|8.8.4.4|1.1.1.1|1.0.0.1|9.9.9.9|208.67.222.222|208.67.220.220)
+          echo "      $ip (well-known public DNS)" ;;
+        127.0.0.1)
+          echo "      $ip (localhost — local resolver)" ;;
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*)
+          echo "      $ip (private network)" ;;
+        *)
+          echo "      $ip (verify this resolver)" ;;
+      esac
+    done
+  fi
+
+  # System proxy settings
+  local net_services
+  net_services=$(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 || true)
+  local proxy_found=false
+  while read -r service; do
+    [[ -z "$service" ]] && continue
+    local web_proxy
+    web_proxy=$(networksetup -getwebproxy "$service" 2>/dev/null || true)
+    if echo "$web_proxy" | grep -q "Enabled: Yes"; then
+      local proxy_server proxy_port
+      proxy_server=$(echo "$web_proxy" | grep "Server:" | awk '{print $2}')
+      proxy_port=$(echo "$web_proxy" | grep "Port:" | awk '{print $2}')
+      warn "Web proxy enabled on $service: $proxy_server:$proxy_port"
+      proxy_found=true
+    fi
+
+    local socks_proxy
+    socks_proxy=$(networksetup -getsocksfirewallproxy "$service" 2>/dev/null || true)
+    if echo "$socks_proxy" | grep -q "Enabled: Yes"; then
+      local socks_server socks_port
+      socks_server=$(echo "$socks_proxy" | grep "Server:" | awk '{print $2}')
+      socks_port=$(echo "$socks_proxy" | grep "Port:" | awk '{print $2}')
+      warn "SOCKS proxy enabled on $service: $socks_server:$socks_port"
+      proxy_found=true
+    fi
+  done <<< "$net_services"
+
+  if ! $proxy_found; then
+    ok "No system proxies enabled"
+  fi
+}
+
+# ─── Network checks ───
+
+check_suspicious_ports() {
+  header "Suspicious Ports"
+
+  local found=0
+  local listen_output
+  listen_output=$(lsof -i -nP 2>/dev/null | grep LISTEN || true)
+
+  for port in "${SUSPECT_PORTS[@]}"; do
+    local matches
+    matches=$(echo "$listen_output" | grep ":${port}[^0-9]" || true)
+    if [[ -n "$matches" ]]; then
+      while IFS= read -r line; do
+        local proc pid
+        proc=$(echo "$line" | awk '{print $1}')
+        pid=$(echo "$line" | awk '{print $2}')
+        fail "Suspicious port $port: $proc (PID $pid)"
+        found=$((found + 1))
+      done <<< "$matches"
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No listening on known suspicious ports"
+  fi
+}
+
+check_reverse_dns() {
+  header "Reverse DNS"
+  info "Reverse DNS lookups are integrated into the Established Connections check"
+  info "Enable 'reverse_dns: true' in config to add hostnames to connection output"
+}
+
+# ─── Deep checks (round 2) ───
+
+check_temp_executables() {
+  header "Temp Directory Executables"
+
+  local found=0
+  local temp_dirs=(/tmp /var/tmp /private/tmp)
+
+  for dir in "${temp_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      local name
+      name=$(basename "$f")
+      local mod_epoch now_epoch age_hours
+      mod_epoch=$(stat -f '%m' "$f" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_hours=$(( (now_epoch - mod_epoch) / 3600 ))
+
+      if [[ "$name" == .* ]]; then
+        fail "Hidden executable in temp dir: $f (${age_hours}h old)"
+      elif [[ "$age_hours" -lt 24 ]]; then
+        warn "Recent executable in temp dir (<24h): $f"
+      else
+        info "Executable in temp dir: $f (${age_hours}h old)"
+      fi
+      found=$((found + 1))
+    done < <(find "$dir" -maxdepth 3 -type f \( -perm +111 -o -name "*.sh" -o -name "*.py" -o -name "*.rb" -o -name "*.pl" \) 2>/dev/null)
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No executables or scripts in temp directories"
+  fi
+}
+
+check_sudoers() {
+  header "Sudoers & PAM"
+
+  local issues=0
+
+  # Check /etc/sudoers for NOPASSWD
+  if [[ -r /etc/sudoers ]]; then
+    local nopasswd
+    nopasswd=$(grep -n 'NOPASSWD' /etc/sudoers 2>/dev/null | grep -v '^[[:space:]]*#' || true)
+    if [[ -n "$nopasswd" ]]; then
+      warn "NOPASSWD entries in /etc/sudoers:"
+      echo "$nopasswd" | while read -r line; do echo "      $line"; done
+      issues=$((issues + 1))
+    fi
+  else
+    info "/etc/sudoers not readable (expected without root)"
+  fi
+
+  # Check sudoers.d
+  if [[ -d /etc/sudoers.d ]]; then
+    local custom_count=0
+    for f in /etc/sudoers.d/*; do
+      [[ -f "$f" ]] || continue
+      local name
+      name=$(basename "$f")
+      [[ "$name" == "README" ]] && continue
+      warn "Custom sudoers file: /etc/sudoers.d/$name"
+      if grep -q 'NOPASSWD' "$f" 2>/dev/null; then
+        fail "NOPASSWD in custom sudoers: /etc/sudoers.d/$name"
+      fi
+      custom_count=$((custom_count + 1))
+      issues=$((issues + 1))
+    done
+    if [[ "$custom_count" -eq 0 ]]; then
+      ok "No custom sudoers.d files"
+    fi
+  fi
+
+  # Check PAM sudo module
+  local pam_sudo="/etc/pam.d/sudo"
+  if [[ -f "$pam_sudo" ]]; then
+    local unusual_pam
+    unusual_pam=$(grep -v '^#' "$pam_sudo" 2>/dev/null | grep 'auth' | grep -v 'pam_smartcard\|pam_opendirectory\|pam_tid\|pam_permit\|sudo_local' || true)
+    if [[ -n "$unusual_pam" ]]; then
+      warn "Non-default PAM auth module in sudo:"
+      echo "$unusual_pam" | while read -r line; do echo "      $line"; done
+      issues=$((issues + 1))
+    else
+      ok "PAM sudo config is default"
+    fi
+  fi
+
+  if [[ "$issues" -eq 0 ]]; then
+    ok "Sudoers configuration looks clean"
+  fi
+}
+
+check_browser_extensions() {
+  header "Browser Extensions"
+
+  local total=0
+  local recent=0
+
+  # Chrome extensions
+  local chrome_dir="$HOME/Library/Application Support/Google/Chrome/Default/Extensions"
+  if [[ -d "$chrome_dir" ]]; then
+    local count
+    count=$(ls -1d "$chrome_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    count=${count:-0}
+    info "Chrome: $count extension(s)"
+    total=$((total + count))
+    while IFS= read -r ext; do
+      [[ -d "$ext" ]] || continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Chrome extension installed/updated <7 days ago: $(basename "$ext")"
+        recent=$((recent + 1))
+      fi
+    done < <(ls -1d "$chrome_dir"/*/ 2>/dev/null)
+  fi
+
+  # Brave extensions
+  local brave_dir="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"
+  if [[ -d "$brave_dir" ]]; then
+    local count
+    count=$(ls -1d "$brave_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    count=${count:-0}
+    info "Brave: $count extension(s)"
+    total=$((total + count))
+    while IFS= read -r ext; do
+      [[ -d "$ext" ]] || continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Brave extension installed/updated <7 days ago: $(basename "$ext")"
+        recent=$((recent + 1))
+      fi
+    done < <(ls -1d "$brave_dir"/*/ 2>/dev/null)
+  fi
+
+  # Firefox extensions
+  local firefox_dir="$HOME/Library/Application Support/Firefox/Profiles"
+  if [[ -d "$firefox_dir" ]]; then
+    local fx_count=0
+    while IFS= read -r profile; do
+      local ext_dir="$profile/extensions"
+      [[ -d "$ext_dir" ]] || continue
+      local pcount
+      pcount=$(ls -1 "$ext_dir" 2>/dev/null | wc -l | tr -d ' ')
+      fx_count=$((fx_count + pcount))
+    done < <(ls -1d "$firefox_dir"/*/ 2>/dev/null)
+    if [[ "$fx_count" -gt 0 ]]; then
+      info "Firefox: $fx_count extension(s)"
+      total=$((total + fx_count))
+    fi
+  fi
+
+  # Safari extensions
+  local safari_dir="$HOME/Library/Safari/Extensions"
+  if [[ -d "$safari_dir" ]]; then
+    local count
+    count=$(ls -1 "$safari_dir" 2>/dev/null | wc -l | tr -d ' ')
+    count=${count:-0}
+    if [[ "$count" -gt 0 ]]; then
+      info "Safari: $count extension(s)"
+      total=$((total + count))
+    fi
+  fi
+
+  if [[ "$total" -eq 0 ]]; then
+    ok "No browser extensions found"
+  elif [[ "$recent" -eq 0 ]]; then
+    ok "No recently installed browser extensions"
+  fi
+}
+
+check_hidden_files() {
+  header "Suspicious Hidden Files"
+
+  local found=0
+  local temp_dirs=(/tmp /var/tmp /private/tmp)
+
+  # Dotfiles in temp dirs
+  for dir in "${temp_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      warn "Hidden file in temp dir: $f"
+      found=$((found + 1))
+    done < <(find "$dir" -maxdepth 2 -name ".*" -type f 2>/dev/null | head -20)
+  done
+
+  # Extended attributes hiding data in temp
+  for dir in "${temp_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local xattr_out
+    xattr_out=$(xattr -lr "$dir" 2>/dev/null | head -20 || true)
+    if [[ -n "$xattr_out" ]]; then
+      warn "Extended attributes on temp files in $dir:"
+      echo "$xattr_out" | head -5 | while read -r line; do echo "      $line"; done
+      found=$((found + 1))
+    fi
+  done
+
+  # Hidden files in Application Support with unusual names
+  local app_support="$HOME/Library/Application Support"
+  if [[ -d "$app_support" ]]; then
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      info "Hidden file in Application Support: $f"
+      found=$((found + 1))
+    done < <(find "$app_support" -maxdepth 2 -name ".*" -not -name ".DS_Store" -not -name ".localized" -type f 2>/dev/null | head -20)
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No suspicious hidden files found"
+  fi
+}
+
+check_reverse_shells() {
+  header "Reverse Shell Detection"
+
+  local found=0
+
+  # True reverse shell signature: shell has stdin/stdout/stderr (FD 0/1/2) pointing to a network socket
+  # Inherited sockets from parent processes use higher FDs and are not reverse shells
+  local shells=("bash" "zsh" "sh" "dash")
+  for shell in "${shells[@]}"; do
+    # Get all shell PIDs
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      pid=$(echo "$pid" | tr -d ' ')
+      # Check if FD 0, 1, or 2 is a network socket (IPv4/IPv6)
+      local fd_check
+      fd_check=$(lsof -p "$pid" -nP 2>/dev/null | awk '$4 ~ /^[012][urw]?$/ && $5 ~ /IPv[46]/' || true)
+      if [[ -n "$fd_check" ]]; then
+        local dest
+        dest=$(echo "$fd_check" | head -1 | awk '{print $9}')
+        fail "Shell ($shell) with stdin/stdout on network socket: PID=$pid -> $dest"
+        found=$((found + 1))
+      fi
+    done < <(pgrep -x "$shell" 2>/dev/null || true)
+  done
+
+  # Check for nc/ncat/socat with established connections (exact process match via pgrep)
+  for tool in nc ncat socat; do
+    while IFS= read -r pid; do
+      [[ -z "$pid" ]] && continue
+      pid=$(echo "$pid" | tr -d ' ')
+      local conns
+      conns=$(lsof -p "$pid" -i -nP 2>/dev/null | grep ESTABLISHED || true)
+      if [[ -n "$conns" ]]; then
+        local dest
+        dest=$(echo "$conns" | head -1 | awk '{print $9}')
+        fail "$tool with established connection: PID=$pid -> $dest"
+        found=$((found + 1))
+      fi
+    done < <(pgrep -x "$tool" 2>/dev/null || true)
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No reverse shell indicators detected"
+  fi
+}
+
+check_system_integrity() {
+  header "System Binary Integrity"
+
+  local critical_bins=(
+    /usr/bin/login
+    /usr/bin/sudo
+    /usr/bin/ssh
+    /usr/sbin/sshd
+    /usr/bin/su
+    /usr/bin/env
+    /usr/bin/passwd
+  )
+
+  local issues=0
+  for bin in "${critical_bins[@]}"; do
+    [[ -f "$bin" ]] || continue
+
+    # Check if it's actually a binary (not a script replacing it)
+    local filetype
+    filetype=$(file -b "$bin" 2>/dev/null || echo "unknown")
+    if echo "$filetype" | grep -qiE 'script|text|ascii'; then
+      fail "Critical binary replaced by script: $bin ($filetype)"
+      issues=$((issues + 1))
+      continue
+    fi
+
+    # Verify code signature
+    local sig
+    sig=$(codesign -dv "$bin" 2>&1 || true)
+    if echo "$sig" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
+      fail "Invalid signature on critical binary: $bin"
+      issues=$((issues + 1))
+    fi
+  done
+
+  # Recently modified files in system bin dirs
+  local recent_count=0
+  for dir in /usr/bin /usr/sbin /usr/local/bin; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      warn "Recently modified system binary (<7 days): $f"
+      recent_count=$((recent_count + 1))
+    done < <(find "$dir" -type f -mtime -7 2>/dev/null)
+  done
+
+  if [[ "$issues" -eq 0 && "$recent_count" -eq 0 ]]; then
+    ok "Critical system binaries intact"
+  fi
+}
+
+check_launchctl_state() {
+  header "Launchd Service State"
+
+  local orphan_count=0
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local label
+    label=$(echo "$line" | awk '{print $3}')
+    [[ -z "$label" || "$label" == "-" ]] && continue
+    # Skip Apple and system services
+    [[ "$label" == com.apple.* || "$label" == application.* ]] && continue
+
+    # Check if there's a plist on disk
+    local found_plist=false
+    for pdir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons" \
+      "/System/Library/LaunchAgents" "/System/Library/LaunchDaemons"; do
+      if [[ -f "$pdir/${label}.plist" ]]; then
+        found_plist=true
         break
       fi
     done
 
-    # Extract the program from the plist
-    local program
-    program=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$plist" 2>/dev/null || \
-              /usr/libexec/PlistBuddy -c "Print :Program" "$plist" 2>/dev/null || echo "unknown")
+    if ! $found_plist; then
+      info "Running service without standard plist: $label"
+      orphan_count=$((orphan_count + 1))
+    fi
+  done < <(launchctl list 2>/dev/null | tail -n +2)
 
-    if $known; then
-      info "${label}: ${name} -> ${program}"
-    else
-      warn "${label} UNKNOWN: ${name} -> ${program}"
-      echo -e "      ${DIM}File: ${plist}${NC}"
-      echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
+  if [[ "$orphan_count" -eq 0 ]]; then
+    ok "All running services have matching plist files"
+  else
+    info "$orphan_count service(s) without standard plist files (may be dynamically loaded)"
+  fi
+}
+
+check_dylib_injection() {
+  header "DYLD Injection (Extended)"
+
+  local found=0
+
+  # Check shell profiles for DYLD vars beyond DYLD_INSERT_LIBRARIES
+  local shell_files=(
+    "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv"
+    "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"
+  )
+  local dyld_patterns=("DYLD_LIBRARY_PATH" "DYLD_FRAMEWORK_PATH"
+    "DYLD_FALLBACK_LIBRARY_PATH" "DYLD_VERSIONED_LIBRARY_PATH")
+
+  for f in "${shell_files[@]}"; do
+    [[ -f "$f" ]] || continue
+    for pat in "${dyld_patterns[@]}"; do
+      if grep -q "$pat" "$f" 2>/dev/null; then
+        warn "$pat set in $(basename "$f")"
+        found=$((found + 1))
+      fi
+    done
+  done
+
+  # Check /etc/launchd.conf for DYLD vars (system-wide injection)
+  if [[ -f /etc/launchd.conf ]]; then
+    local dyld_conf
+    dyld_conf=$(grep -i 'DYLD_' /etc/launchd.conf 2>/dev/null || true)
+    if [[ -n "$dyld_conf" ]]; then
+      fail "DYLD variables in /etc/launchd.conf (system-wide injection):"
+      echo "$dyld_conf" | while read -r line; do echo "      $line"; done
+      found=$((found + 1))
+    fi
+  fi
+
+  # Look for .dylib files in non-standard locations
+  local suspicious_dirs=(/tmp /var/tmp /private/tmp "$HOME/Downloads" "$HOME/Desktop")
+  for dir in "${suspicious_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      warn "Suspicious .dylib in non-standard location: $f"
+      found=$((found + 1))
+    done < <(find "$dir" -maxdepth 3 -name "*.dylib" -type f 2>/dev/null)
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No DYLD injection indicators"
+  fi
+}
+
+check_dns_tunneling() {
+  header "DNS Tunneling Indicators"
+
+  local found=0
+
+  # Check for processes making direct DNS requests to external resolvers
+  local external_dns=("8.8.8.8" "8.8.4.4" "1.1.1.1" "1.0.0.1" "9.9.9.9")
+  for dns_ip in "${external_dns[@]}"; do
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      local proc pid
+      proc=$(echo "$line" | awk '{print $1}')
+      pid=$(echo "$line" | awk '{print $2}')
+      # Skip mDNSResponder and known DNS tools
+      [[ "$proc" == "mDNSRespo" || "$proc" == "mDNSResponder" || "$proc" == "systemstats" ]] && continue
+      info "Process connecting to external DNS ${dns_ip}: ${proc} (PID ${pid})"
+    done < <(lsof -i "UDP@${dns_ip}:53" -nP 2>/dev/null | grep -v "^COMMAND" || true)
+  done
+
+  # Check for DoH config in Chrome
+  local chrome_prefs="$HOME/Library/Application Support/Google/Chrome/Default/Preferences"
+  if [[ -f "$chrome_prefs" ]]; then
+    if grep -q '"dns_over_https"' "$chrome_prefs" 2>/dev/null; then
+      local doh_mode
+      doh_mode=$(grep -o '"mode":"[^"]*"' "$chrome_prefs" 2>/dev/null | head -1 || true)
+      info "Chrome DNS-over-HTTPS configured: $doh_mode"
+    fi
+  fi
+
+  # Check for unusually high DNS query volume (last 5 minutes)
+  local dns_log
+  dns_log=$(timeout 5 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+  if [[ "$dns_log" -gt 500 ]]; then
+    warn "High DNS query volume in last 5 minutes: $dns_log entries (possible DNS tunneling)"
+    found=$((found + 1))
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No DNS tunneling indicators"
+  fi
+}
+
+check_recently_modified() {
+  header "Recently Modified System Files"
+
+  local found=0
+
+  # System binaries modified in last 7 days
+  for dir in /usr/bin /usr/sbin /usr/lib; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      warn "Recently modified (<7 days): $f"
+      found=$((found + 1))
+    done < <(find "$dir" -type f -mtime -7 2>/dev/null)
+  done
+
+  # /System modifications (should never happen with SIP, except asset updates)
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    # Apple auto-updates AssetsV2 (Siri models, translations) — not suspicious
+    [[ "$f" == */AssetsV2/* ]] && continue
+    fail "Recently modified in /System (<7 days): $f"
+    found=$((found + 1))
+  done < <(find /System -type f -mtime -7 2>/dev/null | head -10)
+
+  # New plist files in /Library/Preferences
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    info "Recent plist in /Library/Preferences: $(basename "$f")"
+    found=$((found + 1))
+  done < <(find /Library/Preferences -name "*.plist" -type f -mtime -7 2>/dev/null | head -10)
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No recently modified system files"
+  fi
+}
+
+check_process_spoofing() {
+  header "Process Name Spoofing"
+
+  local found=0
+
+  # Compare ps comm (short name, can be changed) vs args (actual binary path)
+  while IFS= read -r line; do
+    local pid comm args binary
+    pid=$(echo "$line" | awk '{print $1}')
+    comm=$(echo "$line" | awk '{print $2}')
+    args=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | xargs)
+    binary="${args%% *}"
+
+    [[ -z "$comm" || -z "$binary" || "$binary" != /* ]] && continue
+
+    # Flag: comm suggests Apple but binary is outside /System
+    if [[ "$comm" == com.apple.* && "$binary" != /System/* && "$binary" != /usr/libexec/* && "$binary" != /usr/sbin/* ]]; then
+      fail "Process name spoofing: comm=$comm but binary=$binary (PID $pid)"
+      found=$((found + 1))
+    fi
+  done < <(ps -eo pid,comm,args 2>/dev/null | tail -n +2)
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No process name spoofing detected"
+  fi
+}
+
+check_promiscuous_interfaces() {
+  header "Promiscuous Network Interfaces"
+
+  local found=false
+  # Parse ifconfig output for active interfaces in promiscuous mode
+  local current_iface=""
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^([a-z0-9]+):[[:space:]].*flags= ]]; then
+      current_iface="${BASH_REMATCH[1]}"
+    fi
+    # Only flag active interfaces (status: active) in PROMISC mode
+    if [[ "$line" == *"PROMISC"* && -n "$current_iface" ]]; then
+      # Check if interface is active
+      local iface_status
+      iface_status=$(ifconfig "$current_iface" 2>/dev/null | grep "status:" || true)
+      if [[ "$iface_status" == *"status: active"* ]]; then
+        warn "Active interface in promiscuous mode: $current_iface (packet sniffing)"
+        found=true
+      fi
+    fi
+  done < <(ifconfig 2>/dev/null)
+
+  if ! $found; then
+    ok "No active interfaces in promiscuous mode"
+  fi
+}
+
+check_deleted_running() {
+  header "Processes Running from Deleted Files"
+
+  local found=0
+
+  # Check if process binaries still exist on disk
+  # The rootkit pattern: execute a binary then delete it so forensics can't find it
+  # Note: lsof +L1 is too noisy on macOS (dyld cache updates cause many false positives)
+  while IFS= read -r line; do
+    local pid binary
+    pid=$(echo "$line" | awk '{print $1}')
+    binary=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    binary="${binary%% *}"
+    [[ -z "$binary" || "$binary" != /* ]] && continue
+    # Skip Apple system paths (updates leave stale references, not suspicious)
+    [[ "$binary" == /System/* || "$binary" == /usr/libexec/* || "$binary" == /usr/sbin/* || "$binary" == /usr/bin/* ]] && continue
+    # Skip known app frameworks
+    [[ "$binary" == /Applications/* || "$binary" == /Library/* ]] && continue
+
+    if [[ ! -f "$binary" ]]; then
+      local proc_name
+      proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+      warn "Process binary no longer on disk: $proc_name (PID $pid) -> $binary"
+      found=$((found + 1))
+    fi
+  done < <(ps -eo pid,args 2>/dev/null | tail -n +2)
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No processes running from deleted binaries"
+  fi
+}
+
+# ─── Elevated privilege checks ───
+
+check_tcc_permissions() {
+  header "TCC Permissions (requires Full Disk Access)"
+
+  local tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
+  if [[ ! -r "$tcc_db" ]]; then
+    info "Cannot read TCC database — requires Full Disk Access or root"
+    return
+  fi
+
+  local services=("kTCCServiceCamera" "kTCCServiceMicrophone" "kTCCServiceScreenCapture"
+                   "kTCCServiceAccessibility" "kTCCServiceSystemPolicyAllFiles")
+  local labels=("Camera" "Microphone" "Screen Recording" "Accessibility" "Full Disk Access")
+
+  for i in "${!services[@]}"; do
+    local svc="${services[$i]}"
+    local label="${labels[$i]}"
+    local grants
+    grants=$(sqlite3 "$tcc_db" \
+      "SELECT client FROM access WHERE service='$svc' AND auth_value=2;" 2>/dev/null || true)
+    if [[ -n "$grants" ]]; then
+      info "$label granted to:"
+      echo "$grants" | while read -r client; do echo "      $client"; done
     fi
   done
 }
 
-check_plist_dir "$HOME/Library/LaunchAgents" "User Agent"
-check_plist_dir "/Library/LaunchAgents" "System Agent"
-check_plist_dir "/Library/LaunchDaemons" "System Daemon"
+check_btm_dump() {
+  header "Background Task Management (requires root)"
 
-# ─── Cron Jobs ───
+  local btm_output
+  btm_output=$(sfltool dumpbtm 2>/dev/null || true)
+  if [[ -z "$btm_output" ]]; then
+    info "Cannot dump BTM — requires root privileges"
+    return
+  fi
 
-header "Persistence: Cron & At Jobs"
+  local unsigned
+  unsigned=$(echo "$btm_output" | grep -B2 "Developer.*unknown\|not signed" 2>/dev/null || true)
+  if [[ -n "$unsigned" ]]; then
+    warn "BTM entries with unknown developer or unsigned:"
+    echo "$unsigned" | while read -r line; do echo "      $line"; done
+  else
+    ok "All BTM entries from known developers"
+  fi
 
-cron_out=$(crontab -l 2>&1)
-if [[ "$cron_out" == *"no crontab"* ]]; then
-  ok "No user crontab"
-else
-  warn "User crontab exists:"
-  echo "$cron_out" | while read -r line; do echo "      $line"; done
-fi
+  local item_count
+  item_count=$(echo "$btm_output" | grep -c "Item:" 2>/dev/null || true)
+  item_count=${item_count:-0}
+  info "BTM total items: $item_count"
+}
 
-if [[ -f /etc/crontab ]]; then
-  warn "/etc/crontab exists"
-else
-  ok "No /etc/crontab"
-fi
+# ─── Main ───
 
-at_out=$(atq 2>&1)
-if [[ -z "$at_out" ]]; then
-  ok "No at jobs"
-else
-  warn "at jobs found:"
-  echo "$at_out" | while read -r line; do echo "      $line"; done
-fi
+echo -e "${BOLD}macOS Security Audit${NC} — $(date '+%Y-%m-%d %H:%M:%S')"
+echo -e "${DIM}Host: $(hostname) | User: $(whoami) | macOS $(sw_vers -productVersion)${NC}"
 
-# ─── MDM / Configuration Profiles ───
-
-header "Persistence: Configuration Profiles"
-
-profiles_out=$(profiles list 2>&1)
-if echo "$profiles_out" | grep -q "no configuration profiles"; then
-  ok "No MDM/configuration profiles installed"
-else
-  warn "Configuration profiles found:"
-  echo "$profiles_out" | while read -r line; do echo "      $line"; done
-fi
-
-# ─── Shell Profiles ───
-
-header "Shell Profile Integrity"
-
-SHELL_FILES=(
-  "$HOME/.zshrc"
-  "$HOME/.zprofile"
-  "$HOME/.zshenv"
-  "$HOME/.zlogin"
-  "$HOME/.bashrc"
-  "$HOME/.bash_profile"
-  "$HOME/.profile"
-)
-
-SUSPICIOUS_PATTERNS=(
-  "curl.*|.*sh"
-  "wget.*|.*sh"
-  "curl.*|.*bash"
-  "base64.*decode"
-  "eval.*\$(curl"
-  "eval.*\$(wget"
-  "/dev/tcp/"
-  "nc -e"
-  "ncat.*-e"
-  "mkfifo"
-  "openssl.*s_client"
-)
-
-for f in "${SHELL_FILES[@]}"; do
-  [[ -f "$f" ]] || continue
-  local_suspicious=false
-  for pat in "${SUSPICIOUS_PATTERNS[@]}"; do
-    if grep -qE "$pat" "$f" 2>/dev/null; then
-      fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
-      local_suspicious=true
+if [[ -n "${SINGLE_CHECK:-}" ]]; then
+  valid=false
+  for name in "${CHECKS[@]}"; do
+    if [[ "$name" == "$SINGLE_CHECK" ]]; then
+      valid=true
+      break
     fi
   done
-  if ! $local_suspicious; then
-    info "$(basename "$f") — clean ($(wc -l < "$f" | tr -d ' ') lines)"
+  if ! $valid; then
+    echo -e "${RED}Unknown check: $SINGLE_CHECK${NC}"
+    echo "Run with --list to see available checks"
+    exit 1
   fi
-done
-
-# Check sourced directories
-if [[ -d "$HOME/.zshrc.d" ]]; then
-  for f in "$HOME/.zshrc.d"/*; do
-    [[ -f "$f" ]] || continue
-    for pat in "${SUSPICIOUS_PATTERNS[@]}"; do
-      if grep -qE "$pat" "$f" 2>/dev/null; then
-        fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
-      fi
-    done
+  "check_${SINGLE_CHECK}"
+else
+  for name in "${CHECKS[@]}"; do
+    check_enabled "$name" && "check_${name}" || true
   done
-  info ".zshrc.d/ — $(ls "$HOME/.zshrc.d" | wc -l | tr -d ' ') files checked"
-fi
-
-# ─── Environment Variables ───
-
-header "Environment Injection"
-
-dyld_vars=$(env | grep -iE '^DYLD_INSERT|^DYLD_FORCE|^DYLD_PRINT' 2>/dev/null || true)
-if [[ -n "$dyld_vars" ]]; then
-  fail "DYLD injection variables set:"
-  echo "$dyld_vars" | while read -r line; do echo "      $line"; done
-else
-  ok "No DYLD injection variables"
-fi
-
-proxy_vars=$(env | grep -iE '^http_proxy=|^https_proxy=|^all_proxy=|^socks_proxy=' 2>/dev/null || true)
-if [[ -n "$proxy_vars" ]]; then
-  warn "Proxy variables set (verify these are intentional):"
-  echo "$proxy_vars" | while read -r line; do echo "      $line"; done
-else
-  ok "No proxy hijack variables"
-fi
-
-ld_vars=$(env | grep -iE '^LD_PRELOAD=' 2>/dev/null || true)
-if [[ -n "$ld_vars" ]]; then
-  fail "LD_PRELOAD set: $ld_vars"
-else
-  ok "No LD_PRELOAD"
-fi
-
-# ─── Kernel/System Extensions ───
-
-header "Kernel & System Extensions"
-
-kext_count=$(ls /Library/Extensions/ 2>/dev/null | grep -c '.kext$' || echo 0)
-if [[ "$kext_count" -gt 0 ]]; then
-  info "$kext_count kernel extension(s) in /Library/Extensions:"
-  ls /Library/Extensions/*.kext 2>/dev/null | while read -r k; do echo "      $(basename "$k")"; done
-else
-  ok "No third-party kernel extensions"
-fi
-
-sysext_out=$(systemextensionsctl list 2>&1)
-if echo "$sysext_out" | grep -q "0 extension"; then
-  ok "No system extensions"
-else
-  info "System extensions:"
-  echo "$sysext_out" | grep -E "^\*|bundleID" | while read -r line; do echo "      $line"; done
-fi
-
-# ─── Authorization Plugins ───
-
-header "Authorization Plugins"
-
-auth_plugins=$(ls /Library/Security/SecurityAgentPlugins/ 2>/dev/null | head -20)
-if [[ -z "$auth_plugins" ]]; then
-  ok "No authorization plugins"
-else
-  warn "Authorization plugins found:"
-  echo "$auth_plugins" | while read -r line; do echo "      $line"; done
-fi
-
-# ─── SSH ───
-
-header "SSH Access"
-
-if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
-  key_count=$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$HOME/.ssh/authorized_keys" 2>/dev/null || echo 0)
-  if [[ "$key_count" -gt 0 ]]; then
-    warn "$key_count SSH authorized key(s) — verify these are yours:"
-    while read -r line; do
-      [[ -z "$line" || "$line" == \#* ]] && continue
-      echo "      ${line: -60}"
-    done < "$HOME/.ssh/authorized_keys"
-  else
-    ok "authorized_keys exists but empty"
-  fi
-else
-  ok "No authorized_keys file"
-fi
-
-# ─── Unsigned Processes ───
-
-header "Process Integrity"
-
-info "Checking for unsigned or suspicious processes..."
-unsigned_count=0
-
-while IFS= read -r line; do
-  pid=$(echo "$line" | awk '{print $1}')
-  comm=$(echo "$line" | awk '{print $2}')
-  [[ "$pid" == "PID" || -z "$comm" ]] && continue
-  # Skip kernel and system processes
-  [[ "$comm" == "-" || "$comm" == "/kernel" ]] && continue
-
-  sig_check=$(codesign -dv "$comm" 2>&1 || true)
-  if echo "$sig_check" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
-    warn "Unsigned/invalid process: PID=$pid $comm"
-    unsigned_count=$((unsigned_count + 1))
-  fi
-done < <(ps -eo pid,comm 2>/dev/null | tail -n +2)
-
-if [[ "$unsigned_count" -eq 0 ]]; then
-  ok "All running processes have valid signatures"
-fi
-
-# ─── Processes from unusual paths ───
-
-header "Process Paths"
-
-info "Checking for processes outside standard locations..."
-unusual_count=0
-
-while IFS= read -r line; do
-  pid=$(echo "$line" | awk '{print $1}')
-  comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
-  [[ -z "$comm" ]] && continue
-
-  # Skip known safe paths
-  if echo "$comm" | grep -qE '^/(System|Library|Applications|usr|sbin|bin|opt/homebrew|private|cores)/'; then
-    continue
-  fi
-  # Skip known user paths
-  if echo "$comm" | grep -qE '^\.(nvm|vscode|cache|foundry|local/bin|cargo)/|/node_modules/|claude|npm'; then
-    continue
-  fi
-  # Skip processes without a path
-  if [[ "$comm" != /* && "$comm" != .* ]]; then
-    continue
-  fi
-
-  info "Non-standard path: PID=$pid $comm"
-  unusual_count=$((unusual_count + 1))
-done < <(ps -eo pid,comm 2>/dev/null | tail -n +2)
-
-if [[ "$unusual_count" -eq 0 ]]; then
-  ok "All processes running from standard locations"
-fi
-
-# ─── Network ───
-
-header "Network: Listening Ports"
-
-while IFS= read -r line; do
-  proc=$(echo "$line" | awk '{print $1}')
-  pid=$(echo "$line" | awk '{print $2}')
-  addr=$(echo "$line" | awk '{print $9}')
-  info "LISTEN $addr ($proc, PID $pid)"
-done < <(lsof -i -nP 2>/dev/null | grep LISTEN)
-
-header "Network: Established Connections"
-
-declare -A CONN_PROCS
-while IFS= read -r line; do
-  proc=$(echo "$line" | awk '{print $1}')
-  dest=$(echo "$line" | awk '{print $9}' | sed 's/.*->//')
-  key="${proc}|${dest%:*}"
-  if [[ -z "${CONN_PROCS[$key]:-}" ]]; then
-    CONN_PROCS[$key]=1
-    info "${proc} -> ${dest}"
-  fi
-done < <(lsof -i -nP 2>/dev/null | grep ESTABLISHED)
-
-# ─── Docker ───
-
-header "Docker Containers"
-
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-  container_count=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$container_count" -gt 0 ]]; then
-    info "$container_count running container(s):"
-    docker ps --format "      {{.Names}}: {{.Image}} ({{.Ports}})" 2>/dev/null
-  else
-    ok "No running containers"
-  fi
-else
-  info "Docker not running or not installed"
 fi
 
 # ─── Summary ───

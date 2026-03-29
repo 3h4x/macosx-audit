@@ -617,6 +617,47 @@ _identify_process() {
   esac
 }
 
+_resolve_process_name() {
+  # Resolve a PID to a more descriptive name from full args
+  local pid="$1"
+  local lsof_proc="$2"
+  local args
+  args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+  [[ -z "$args" ]] && echo "$lsof_proc" && return
+
+  # Extract app name from .app bundle path
+  if [[ "$args" == *".app/"* ]]; then
+    local app_name
+    app_name=$(echo "$args" | grep -oE '[^/]+\.app' | head -1 | sed 's/\.app$//')
+    [[ -n "$app_name" ]] && echo "$app_name" && return
+  fi
+
+  # Known CLI tools
+  local binary="${args%% *}"
+  case "$binary" in
+    claude|*/claude)     echo "Claude CLI" && return ;;
+    node|*/node)
+      # Check what node is actually running
+      local script="${args#* }"
+      case "$script" in
+        *playwright*) echo "Playwright MCP" && return ;;
+        *next-server*|next-server*) echo "Next.js" && return ;;
+        *webpack*) echo "Webpack" && return ;;
+        *vite*) echo "Vite" && return ;;
+        *tsx*|*ts-node*) echo "Node (TS)" && return ;;
+        *) echo "Node" && return ;;
+      esac
+      ;;
+  esac
+
+  # Check the comm field for descriptive names (e.g. "next-server (v15.5.9)")
+  local comm
+  comm=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+  if [[ "$comm" == next-server* ]]; then echo "Next.js" && return; fi
+
+  echo "$lsof_proc"
+}
+
 check_network_established() {
   header "Network: Established Connections"
 
@@ -635,12 +676,13 @@ check_network_established() {
       local ip="${dest%:*}"
       local label
       label=$(_identify_ip "$ip")
-      local proc_desc
+      local proc_desc resolved_name
       proc_desc=$(_identify_process "$proc")
+      resolved_name=$(_resolve_process_name "$pid" "$proc")
 
       # Build display string
-      local display="${proc} (PID ${pid})"
-      [[ -n "$proc_desc" ]] && display="${proc} (${proc_desc}, PID ${pid})"
+      local display="${resolved_name} (PID ${pid})"
+      [[ -n "$proc_desc" ]] && display="${resolved_name} (${proc_desc}, PID ${pid})"
       local target="${dest}"
       if $do_rdns && [[ -z "$label" ]]; then
         local hostname
@@ -1186,6 +1228,37 @@ check_sudoers() {
   fi
 }
 
+_resolve_chromium_ext_name() {
+  # Resolve a Chromium extension ID to its human-readable name
+  local ext_dir="$1"
+  local ver_dir manifest name msg_key msgs
+  ver_dir=$(ls -1d "$ext_dir"/*/ 2>/dev/null | tail -1)
+  [[ -z "$ver_dir" ]] && echo "unknown" && return
+  manifest="$ver_dir/manifest.json"
+  [[ ! -f "$manifest" ]] && echo "unknown" && return
+
+  name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$manifest" 2>/dev/null | head -1 | sed 's/"name"[[:space:]]*:[[:space:]]*"//;s/"$//')
+  if [[ "$name" == __MSG_* ]]; then
+    msg_key="${name#__MSG_}"
+    msg_key="${msg_key%__}"
+    for locale_dir in "$ver_dir/_locales/en" "$ver_dir/_locales/en_US" "$ver_dir/_locales/en_GB"; do
+      msgs="$locale_dir/messages.json"
+      [[ -f "$msgs" ]] || continue
+      local resolved
+      resolved=$(grep -A2 "\"$msg_key\"" "$msgs" 2>/dev/null | grep '"message"' | head -1 | sed 's/.*"message"[[:space:]]*:[[:space:]]*"//;s/".*//')
+      if [[ -n "$resolved" ]]; then
+        echo "$resolved"
+        return
+      fi
+    done
+    echo "$name"
+  elif [[ -n "$name" ]]; then
+    echo "$name"
+  else
+    echo "unknown"
+  fi
+}
+
 check_browser_extensions() {
   header "Browser Extensions"
 
@@ -1207,7 +1280,9 @@ check_browser_extensions() {
       now_epoch=$(date +%s)
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if [[ "$age_days" -lt 7 ]]; then
-        warn "Chrome extension installed/updated <7 days ago: $(basename "$ext")"
+        local ext_name
+        ext_name=$(_resolve_chromium_ext_name "$ext")
+        warn "Chrome extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
         recent=$((recent + 1))
       fi
     done < <(ls -1d "$chrome_dir"/*/ 2>/dev/null)
@@ -1228,7 +1303,9 @@ check_browser_extensions() {
       now_epoch=$(date +%s)
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if [[ "$age_days" -lt 7 ]]; then
-        warn "Brave extension installed/updated <7 days ago: $(basename "$ext")"
+        local ext_name
+        ext_name=$(_resolve_chromium_ext_name "$ext")
+        warn "Brave extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
         recent=$((recent + 1))
       fi
     done < <(ls -1d "$brave_dir"/*/ 2>/dev/null)
@@ -1286,13 +1363,13 @@ check_hidden_files() {
     done < <(find "$dir" -maxdepth 2 -name ".*" -type f 2>/dev/null | head -20)
   done
 
-  # Extended attributes hiding data in temp
+  # Extended attributes hiding data in temp (exclude normal macOS attrs)
   for dir in "${temp_dirs[@]}"; do
     [[ -d "$dir" ]] || continue
     local xattr_out
-    xattr_out=$(xattr -lr "$dir" 2>/dev/null | head -20 || true)
+    xattr_out=$(xattr -lr "$dir" 2>/dev/null | grep -v 'com.apple.provenance\|com.apple.quarantine\|com.apple.metadata\|com.apple.lastuseddate\|com.apple.macl' | head -20 || true)
     if [[ -n "$xattr_out" ]]; then
-      warn "Extended attributes on temp files in $dir:"
+      warn "Non-standard extended attributes on temp files in $dir:"
       echo "$xattr_out" | head -5 | while read -r line; do echo "      $line"; done
       found=$((found + 1))
     fi

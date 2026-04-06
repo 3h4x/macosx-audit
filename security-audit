@@ -1603,11 +1603,34 @@ check_dns_tunneling() {
   fi
 
   # Check for unusually high DNS query volume (last 5 minutes)
-  local dns_log
-  dns_log=$(timeout 5 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-  if [[ "$dns_log" -gt 500 ]]; then
-    warn "High DNS query volume in last 5 minutes: $dns_log entries (possible DNS tunneling)"
+  # Count actual query STARTs (not all log lines — each lookup generates 4-8 lines)
+  local dns_logs dns_query_count
+  dns_logs=$(timeout 10 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null || true)
+  dns_query_count=$(echo "$dns_logs" | grep -c 'DNSServiceQueryRecord START' || echo "0")
+
+  if [[ "$dns_query_count" -gt 500 ]]; then
+    warn "High DNS query volume in last 5 minutes: $dns_query_count queries (possible DNS tunneling)"
     found=$((found + 1))
+
+    # Break down by process so the user can investigate
+    info "DNS query breakdown by process (top 10):"
+    echo "$dns_logs" \
+      | grep -oE 'client pid: [0-9]+ \([^)]+\)' \
+      | sed 's/client pid: [0-9]* (\(.*\))/\1/' \
+      | sort | uniq -c | sort -rn | head -10 \
+      | while read -r count proc; do
+          info "  ${count} queries — ${proc}"
+        done
+
+    # Show unique name hashes to gauge query diversity (tunneling = many unique names)
+    local unique_names
+    unique_names=$(echo "$dns_logs" | grep -oE 'name hash: [0-9a-f]+' | sort -u | wc -l | tr -d ' ')
+    info "Unique domains queried: ~${unique_names}"
+    if [[ "$unique_names" -gt 200 ]]; then
+      warn "Very high domain diversity (${unique_names} unique) — typical of DNS tunneling or heavy browsing"
+    fi
+  else
+    info "DNS query volume in last 5 minutes: $dns_query_count queries"
   fi
 
   if [[ "$found" -eq 0 ]]; then

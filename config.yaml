@@ -5,6 +5,7 @@
 
 # --- Core checks (no special permissions) ---
 system_hardening: true
+screensaver: true             # Screensaver password required + idle timeout ≤5 minutes
 launch_agents: true
 cron_jobs: true
 mdm_profiles: true

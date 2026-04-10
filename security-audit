@@ -37,7 +37,7 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
 # ─── Check registry ───
 
-CHECKS=(system_hardening launch_agents cron_jobs mdm_profiles shell_profiles
+CHECKS=(system_hardening screensaver launch_agents cron_jobs mdm_profiles shell_profiles
   env_injection extensions auth_plugins ssh_access process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
@@ -109,7 +109,7 @@ list_checks() {
   echo -e "${BOLD}Available checks:${NC}"
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
-  for name in system_hardening launch_agents cron_jobs mdm_profiles shell_profiles \
+  for name in system_hardening screensaver launch_agents cron_jobs mdm_profiles shell_profiles \
     env_injection extensions auth_plugins ssh_access process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
@@ -253,6 +253,68 @@ check_system_hardening() {
     ok "macOS Firewall enabled"
   else
     warn "macOS Firewall disabled"
+  fi
+}
+
+check_screensaver() {
+  header "Screensaver Security"
+
+  # Check if screensaver requires password on wake (askForPassword = 1 is required)
+  # On Ventura+, this key is stored in the per-host domain; fall back to global domain.
+  # On Sequoia+ (macOS 15+), the key may be absent entirely — absence means the system
+  # default applies (password required). Only explicit 0 means disabled.
+  local ask_pw
+  ask_pw=$(defaults -currentHost read com.apple.screensaver askForPassword 2>/dev/null || \
+           defaults read com.apple.screensaver askForPassword 2>/dev/null || true)
+
+  if [[ "$ask_pw" != "0" ]]; then
+    ok "Screensaver requires password on wake"
+
+    # Check grace period before password is required (0 = immediate)
+    # Value may be stored as float ("5.0") — strip decimal for integer comparison
+    local pw_delay
+    pw_delay=$(defaults read com.apple.screensaver askForPasswordDelay 2>/dev/null || echo "0")
+    pw_delay="${pw_delay%%.*}"
+    if [[ "$pw_delay" -eq 0 ]]; then
+      ok "Password required immediately (no grace period)"
+    else
+      warn "Screensaver password delay: ${pw_delay}s — system can be unlocked without password within this window"
+    fi
+  else
+    fail "Screensaver does NOT require password — physical access bypasses screen lock"
+  fi
+
+  # Check idle time before screensaver activates (per-host setting takes precedence)
+  # On macOS 15+, idleTime may be absent from com.apple.screensaver; fall back to
+  # display sleep time from pmset (which drives lock on modern macOS).
+  local idle_time
+  idle_time=$(defaults -currentHost read com.apple.screensaver idleTime 2>/dev/null || \
+              defaults read com.apple.screensaver idleTime 2>/dev/null || true)
+  idle_time="${idle_time%%.*}"
+
+  if [[ -z "$idle_time" ]]; then
+    # Key absent — check display sleep time as fallback (macOS 15+ behavior)
+    local display_sleep
+    display_sleep=$(pmset -g 2>/dev/null | awk '/displaysleep/ {print $2}')
+    if [[ -n "$display_sleep" && "$display_sleep" -gt 0 ]]; then
+      if [[ "$display_sleep" -gt 5 ]]; then
+        warn "Display sleep (lock trigger) set to ${display_sleep} minute(s) — consider reducing to ≤5 minutes"
+      else
+        ok "Screen locks after ${display_sleep} minute(s) of inactivity (display sleep)"
+      fi
+    else
+      warn "Screensaver auto-start is disabled — screen never locks automatically"
+    fi
+  elif [[ "$idle_time" -eq 0 ]]; then
+    warn "Screensaver auto-start is disabled — screen never locks automatically"
+  else
+    local idle_min
+    idle_min=$(( idle_time / 60 ))
+    if [[ "$idle_time" -gt 300 ]]; then
+      warn "Screensaver activates after ${idle_min} minute(s) — consider reducing to ≤5 minutes"
+    else
+      ok "Screensaver activates after ${idle_min} minute(s)"
+    fi
   fi
 }
 

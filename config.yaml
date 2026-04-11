@@ -59,3 +59,24 @@ deleted_running: true         # Processes running from deleted files
 # These checks need root/sudo. Enable with --root flag or set to true here.
 tcc_permissions: false        # TCC database: camera, mic, screen recording grants (requires Full Disk Access)
 btm_dump: false               # sfltool dumpbtm: full Background Task Management audit (requires root)
+
+# --- Ignore list ---
+# Findings whose message contains any of these substrings are suppressed from the summary.
+# Inline output is still shown; only the final summary is filtered.
+ignore:
+  - "Display sleep (lock trigger)"
+  - "User Agent UNKNOWN: com.3h4x"
+  - "XProtect data is"
+  - "VS Code extension installed <7 days ago: anthropic.claude-code"
+  - "VS Code extension installed <7 days ago: github.copilot-chat"
+  - "VS Code extension installed <7 days ago: google.gemini-cli"
+  - "VS Code extension installed <7 days ago: ms-vscode-remote.remote-containers"
+  - "VS Code extension installed <7 days ago: vscodevim.vim"
+  - "PATH directory does not exist: /opt/homebrew/opt/libpq/bin"
+  - "Suspicious port 1234:"
+  - "Chrome extension installed/updated <7 days ago: Google Docs Offline"
+  - "Chrome extension installed/updated <7 days ago: __MSG_APP_NAME__"
+  - "Hidden file in temp dir: /private/tmp/TemporaryDirectory."
+  - "Hidden file in temp dir: /private/tmp/.DS_Store"
+  - "Hidden file in temp dir: /private/tmp/.skipHello"
+  - "Non-standard extended attributes on temp files in /private/tmp"

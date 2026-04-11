@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Env: MOCK_CODESIGN=valid|unsigned|invalid (default: valid)
+case "${MOCK_CODESIGN:-valid}" in
+  valid)
+    echo "Executable=/usr/bin/ls"
+    echo "Identifier=com.apple.ls"
+    echo "Format=Mach-O thin (x86_64)"
+    echo "CodeDirectory v=20400 size=234"
+    ;;
+  unsigned)
+    echo "code object is not signed at all"
+    exit 1
+    ;;
+  invalid)
+    echo "invalid signature (code or signature have been modified)"
+    exit 1
+    ;;
+esac

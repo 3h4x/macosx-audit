@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Env: MOCK_FDESETUP=on|off (default: on)
+case "${MOCK_FDESETUP:-on}" in
+  on)  echo "FileVault is On." ;;
+  off) echo "FileVault is Off." ;;
+esac

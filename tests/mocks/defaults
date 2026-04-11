@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Mocks `defaults` for screensaver checks.
+# Env vars:
+#   MOCK_SCREENSAVER_ASK_PW=1|0          (default: 1 — password required)
+#   MOCK_SCREENSAVER_PW_DELAY=0|N        (default: 0 — immediate)
+#   MOCK_SCREENSAVER_IDLE_TIME=N|absent  (default: 300 — 5 minutes)
+
+if [[ "$*" == *"askForPasswordDelay"* ]]; then
+  echo "${MOCK_SCREENSAVER_PW_DELAY:-0}"
+  exit 0
+fi
+
+if [[ "$*" == *"askForPassword"* ]]; then
+  echo "${MOCK_SCREENSAVER_ASK_PW:-1}"
+  exit 0
+fi
+
+if [[ "$*" == *"idleTime"* ]]; then
+  if [[ "${MOCK_SCREENSAVER_IDLE_TIME:-300}" == "absent" ]]; then
+    exit 1
+  fi
+  echo "${MOCK_SCREENSAVER_IDLE_TIME:-300}"
+  exit 0
+fi
+
+# Unknown key — simulate key not found
+exit 1

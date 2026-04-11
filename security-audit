@@ -28,6 +28,7 @@ NC='\033[0m'
 
 WARNINGS=0
 FINDINGS=()
+IGNORE_PATTERNS=()
 
 header() { echo -e "\n${CYAN}${BOLD}=== $1 ===${NC}"; }
 ok() { echo -e "  ${GREEN}[OK]${NC} $1"; }
@@ -54,9 +55,25 @@ declare -A CONFIG
 
 parse_config() {
   local file="$1"
+  local in_ignore=false
   while IFS= read -r line; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    if [[ "$line" =~ ^ignore:[[:space:]]*$ ]]; then
+      in_ignore=true
+      continue
+    fi
+    if $in_ignore; then
+      if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
+        local pattern="${BASH_REMATCH[1]}"
+        pattern="${pattern#\"}" pattern="${pattern%\"}"
+        pattern="${pattern#\'}" pattern="${pattern%\'}"
+        IGNORE_PATTERNS+=("$pattern")
+        continue
+      else
+        in_ignore=false
+      fi
+    fi
     if [[ "$line" =~ ^([a-z_]+):[[:space:]]*(true|false) ]]; then
       CONFIG["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
     fi
@@ -923,6 +940,29 @@ check_supply_chain() {
     fi
   fi
 
+  # Cursor extensions (~/.cursor/extensions — same format as VS Code)
+  local cursor_dir="$HOME/.cursor/extensions"
+  if [[ -d "$cursor_dir" ]]; then
+    local ext_count
+    ext_count=$(ls -1d "$cursor_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    info "Cursor: $ext_count extension(s) installed"
+    local recent=0
+    while IFS= read -r ext; do
+      [[ -d "$ext" ]] || continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Cursor extension installed <7 days ago: $(basename "$ext")"
+        recent=$((recent + 1))
+      fi
+    done < <(ls -1d "$cursor_dir"/*/ 2>/dev/null)
+    if [[ "$recent" -eq 0 ]]; then
+      ok "No recently installed Cursor extensions"
+    fi
+  fi
+
   # npm globals
   if command -v npm &>/dev/null; then
     local npm_globals
@@ -1023,8 +1063,38 @@ check_ssh_config() {
     echo "$fwd_rules" | while read -r line; do echo "      $line"; done
   fi
 
+  # StrictHostKeyChecking no — disables MITM protection; C2 frameworks set this to avoid
+  # interactive prompts when connecting to newly provisioned infrastructure
+  local strict_check
+  strict_check=$(grep -inE 'StrictHostKeyChecking[[:space:]]+no' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$strict_check" ]]; then
+    warn "SSH StrictHostKeyChecking disabled — MITM attacks go undetected:"
+    echo "$strict_check" | while read -r line; do echo "      $line"; done
+    issues=true
+  fi
+
+  # UserKnownHostsFile /dev/null — silently discards host keys so every connection
+  # appears "new"; paired with StrictHostKeyChecking no this is a classic C2 config
+  local null_hosts
+  null_hosts=$(grep -in 'UserKnownHostsFile[[:space:]].*\/dev\/null' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$null_hosts" ]]; then
+    warn "SSH UserKnownHostsFile set to /dev/null — host keys never persisted (MITM risk):"
+    echo "$null_hosts" | while read -r line; do echo "      $line"; done
+    issues=true
+  fi
+
+  # ControlPath in /tmp — ControlMaster session multiplexing with a world-writable
+  # socket path enables session hijacking by any local process
+  local control_path
+  control_path=$(grep -in 'ControlPath[[:space:]].*\/tmp\/' "$ssh_config" 2>/dev/null || true)
+  if [[ -n "$control_path" ]]; then
+    warn "SSH ControlPath in /tmp — session socket in world-writable dir (hijacking risk):"
+    echo "$control_path" | while read -r line; do echo "      $line"; done
+    issues=true
+  fi
+
   if ! $issues; then
-    ok "SSH config clean — no ProxyCommand or env forwarding"
+    ok "SSH config clean — no ProxyCommand, env forwarding, or MITM-enabling options"
   fi
 }
 
@@ -1668,7 +1738,7 @@ check_dns_tunneling() {
   # Count actual query STARTs (not all log lines — each lookup generates 4-8 lines)
   local dns_logs dns_query_count
   dns_logs=$(timeout 10 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null || true)
-  dns_query_count=$(echo "$dns_logs" | grep -c 'DNSServiceQueryRecord START' || echo "0")
+  dns_query_count=$(echo "$dns_logs" | grep -c 'DNSServiceQueryRecord START' || true)
 
   if [[ "$dns_query_count" -gt 500 ]]; then
     warn "High DNS query volume in last 5 minutes: $dns_query_count queries (possible DNS tunneling)"
@@ -1906,13 +1976,37 @@ echo ""
 echo -e "${BOLD}─── Summary ───${NC}"
 echo ""
 
-if [[ "$WARNINGS" -eq 0 ]]; then
+# Filter findings against ignore patterns
+VISIBLE_FINDINGS=()
+IGNORED_COUNT=0
+for f in "${FINDINGS[@]}"; do
+  _ignored=false
+  for pattern in "${IGNORE_PATTERNS[@]}"; do
+    if [[ "$f" == *"$pattern"* ]]; then
+      _ignored=true
+      break
+    fi
+  done
+  if $_ignored; then
+    IGNORED_COUNT=$(( IGNORED_COUNT + 1 ))
+  else
+    VISIBLE_FINDINGS+=("$f")
+  fi
+done
+
+if [[ "${#VISIBLE_FINDINGS[@]}" -eq 0 ]]; then
   echo -e "${GREEN}${BOLD}No issues found.${NC} System looks clean."
+  if [[ "$IGNORED_COUNT" -gt 0 ]]; then
+    echo -e "${DIM}(${IGNORED_COUNT} finding(s) suppressed by ignore list)${NC}"
+  fi
 else
-  echo -e "${YELLOW}${BOLD}${WARNINGS} finding(s):${NC}"
-  for f in "${FINDINGS[@]}"; do
+  echo -e "${YELLOW}${BOLD}${#VISIBLE_FINDINGS[@]} finding(s):${NC}"
+  for f in "${VISIBLE_FINDINGS[@]}"; do
     echo -e "  ${YELLOW}-${NC} $f"
   done
+  if [[ "$IGNORED_COUNT" -gt 0 ]]; then
+    echo -e "${DIM}  (${IGNORED_COUNT} additional finding(s) suppressed by ignore list)${NC}"
+  fi
 fi
 
 echo ""

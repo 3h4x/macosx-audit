@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Env: MOCK_BREW_TAPS=default|suspicious (default: default)
+case "$1" in
+  tap)
+    case "${MOCK_BREW_TAPS:-default}" in
+      default)
+        printf "homebrew/core\nhomebrew/cask\n"
+        ;;
+      suspicious)
+        printf "homebrew/core\nhomebrew/cask\nsomehacker/evil-tools\n"
+        ;;
+    esac
+    ;;
+  *)
+    ;;
+esac

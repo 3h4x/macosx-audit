@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Mocks `log show` for dns_tunneling check.
+# Env: MOCK_LOG=empty|high_volume (default: empty)
+
+FIXTURE_DIR="${FIXTURE_DIR:-$(cd "$(dirname "$0")/../fixtures" && pwd)}"
+
+# Only intercept `log show` subcommand; pass anything else through
+if [[ "$1" != "show" ]]; then
+  exec /usr/bin/log "$@"
+fi
+
+case "${MOCK_LOG:-empty}" in
+  empty) ;;
+  high_volume) cat "$FIXTURE_DIR/dns_logs_high_volume.txt" ;;
+esac

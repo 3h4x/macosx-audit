@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Routes based on arguments and env vars.
+# For UDP@IP:53 args (dns_tunneling check):
+#   Env: MOCK_LSOF_DNS=empty|external (default: empty)
+# For -i args (suspicious_ports / network checks):
+#   Env: MOCK_LSOF=clean|suspicious_port (default: clean)
+
+FIXTURE_DIR="${FIXTURE_DIR:-$(cd "$(dirname "$0")/../fixtures" && pwd)}"
+
+if [[ "$*" == *"UDP@"* ]]; then
+  case "${MOCK_LSOF_DNS:-empty}" in
+    empty) ;;
+    external)
+      echo "COMMAND   PID  USER  FD  TYPE  DEVICE  SIZE  NODE  NAME"
+      echo "python3   999  user  5u  IPv4  0x0     0t0   UDP   192.168.1.5:54321->8.8.8.8:53"
+      ;;
+  esac
+  exit 0
+fi
+
+case "${MOCK_LSOF:-clean}" in
+  clean)
+    echo "COMMAND   PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NODE  NAME"
+    ;;
+  suspicious_port)
+    cat "$FIXTURE_DIR/lsof_suspicious_port.txt"
+    ;;
+esac

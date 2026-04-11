@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Env: MOCK_PS=signed|unsigned (default: signed)
+# For unsigned: MOCK_PS_BINARY must be set to a file path that exists on disk.
+case "${MOCK_PS:-signed}" in
+  signed)
+    printf "    PID ARGS\n"
+    printf "      1 /sbin/launchd\n"
+    ;;
+  unsigned)
+    printf "    PID ARGS\n"
+    printf "    999 %s\n" "${MOCK_PS_BINARY:-/bin/sh}"
+    ;;
+esac

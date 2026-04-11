@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Env: MOCK_NPM_GLOBALS=clean|populated (default: clean)
+case "$1" in
+  list)
+    case "${MOCK_NPM_GLOBALS:-clean}" in
+      clean)
+        echo "/usr/local/lib"
+        echo "└── npm@10.2.0"
+        ;;
+      populated)
+        echo "/usr/local/lib"
+        echo "├── npm@10.2.0"
+        echo "├── typescript@5.0.0"
+        echo "└── ts-node@10.9.0"
+        ;;
+    esac
+    ;;
+  *)
+    ;;
+esac

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Strips the timeout duration and executes the remaining command.
+# Usage mirrors GNU timeout: timeout DURATION COMMAND [ARGS...]
+shift  # remove duration
+exec "$@"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Mocks `pmset -g` for screensaver fallback (macOS 15+ idle time).
+# Env: MOCK_PMSET_DISPLAYSLEEP=N (default: 5)
+echo "System-wide power settings:"
+echo " displaysleep        ${MOCK_PMSET_DISPLAYSLEEP:-5}"
+echo " sleep               10"

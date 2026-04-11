@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Env: MOCK_SPCTL=enabled|disabled (default: enabled)
+case "${MOCK_SPCTL:-enabled}" in
+  enabled)  echo "assessments enabled" ;;
+  disabled) echo "assessments disabled" ;;
+esac

@@ -38,7 +38,7 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
 # ─── Check registry ───
 
-CHECKS=(system_hardening screensaver launch_agents cron_jobs mdm_profiles shell_profiles
+CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles
   env_injection extensions auth_plugins ssh_access process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
@@ -126,7 +126,7 @@ list_checks() {
   echo -e "${BOLD}Available checks:${NC}"
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
-  for name in system_hardening screensaver launch_agents cron_jobs mdm_profiles shell_profiles \
+  for name in system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles \
     env_injection extensions auth_plugins ssh_access process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
@@ -270,6 +270,76 @@ check_system_hardening() {
     ok "macOS Firewall enabled"
   else
     warn "macOS Firewall disabled"
+  fi
+
+  # Software update checks — auto-check and critical security patch install
+  local auto_check critical_install
+  auto_check=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null || echo "0")
+  critical_install=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall 2>/dev/null || echo "0")
+  if [[ "$auto_check" != "1" ]]; then
+    warn "Automatic update checks disabled — security patches may be missed"
+  elif [[ "$critical_install" != "1" ]]; then
+    warn "Critical security updates auto-install disabled — patches require manual action"
+  else
+    ok "Automatic security updates enabled"
+  fi
+}
+
+check_sharing_services() {
+  header "Sharing Services"
+
+  # Automatic Login — no password required at boot (physical access = full compromise)
+  local auto_login
+  auto_login=$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || true)
+  if [[ -n "$auto_login" ]]; then
+    fail "Automatic login enabled for: $auto_login — system boots without password"
+  else
+    ok "Automatic login disabled"
+  fi
+
+  # Guest Account — anonymous local access
+  local guest_enabled
+  guest_enabled=$(defaults read /Library/Preferences/com.apple.loginwindow GuestEnabled 2>/dev/null || echo "0")
+  if [[ "$guest_enabled" == "1" ]]; then
+    warn "Guest account is enabled — anonymous local access possible"
+  else
+    ok "Guest account disabled"
+  fi
+
+  # Remote Login (SSH server)
+  local ssh_status
+  ssh_status=$(systemsetup -getremotelogin 2>/dev/null || true)
+  if echo "$ssh_status" | grep -qi "remote login: on"; then
+    warn "Remote Login (SSH server) is ON — ensure only authorized keys are accepted"
+  elif echo "$ssh_status" | grep -qi "remote login: off"; then
+    ok "Remote Login (SSH server) disabled"
+  else
+    # systemsetup requires admin on Sonoma+; fall back to port listener check
+    if lsof -i TCP:22 -sTCP:LISTEN -nP 2>/dev/null | grep -q sshd; then
+      warn "sshd listening on port 22 — Remote Login may be enabled"
+    else
+      ok "Remote Login (SSH server) appears disabled"
+    fi
+  fi
+
+  # Screen Sharing / Remote Management (VNC on port 5900)
+  if lsof -i TCP:5900 -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
+    fail "Screen Sharing / VNC listening on port 5900 — remote visual access possible"
+  else
+    ok "Screen Sharing disabled"
+  fi
+
+  # Remote Management ARD control channel (UDP 3283)
+  if lsof -i UDP:3283 -nP 2>/dev/null | grep -qi "ARD\|remote"; then
+    warn "Remote Management (ARD) appears active on UDP port 3283"
+  fi
+
+  # File Sharing (SMB port 445 or AFP port 548)
+  if lsof -i TCP:445 -sTCP:LISTEN -nP 2>/dev/null | grep -q . || \
+     lsof -i TCP:548 -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
+    warn "File Sharing is enabled (SMB/AFP listener detected)"
+  else
+    ok "File Sharing disabled"
   fi
 }
 

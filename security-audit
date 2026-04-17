@@ -42,7 +42,7 @@ CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs md
   env_injection extensions auth_plugins ssh_access process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
-  xprotect_status supply_chain ssh_config git_hooks path_security
+  xprotect_status supply_chain ai_agent_hooks ssh_config git_hooks path_security
   dns_proxy suspicious_ports reverse_dns
   temp_executables sudoers browser_extensions hidden_files reverse_shells
   system_integrity launchctl_state dylib_injection dns_tunneling
@@ -142,9 +142,11 @@ list_checks() {
   done
   echo ""
   echo -e "  ${CYAN}Supply chain:${NC}"
-  local status="on"
-  [[ "${CONFIG[supply_chain]:-true}" == "false" ]] && status="off"
-  echo -e "    supply_chain  ${DIM}[${status}]${NC}"
+  for name in supply_chain ai_agent_hooks; do
+    local status="on"
+    [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
+    echo -e "    ${name}  ${DIM}[${status}]${NC}"
+  done
   echo ""
   echo -e "  ${CYAN}Configuration abuse:${NC}"
   for name in ssh_config git_hooks path_security dns_proxy; do
@@ -1091,6 +1093,157 @@ check_supply_chain() {
       pip_count=$(echo "$pip_user" | wc -l | tr -d ' ')
       info "pip user packages: $pip_count"
     fi
+  fi
+
+  # Rust/cargo installed binaries
+  local cargo_bin="$HOME/.cargo/bin"
+  if [[ -d "$cargo_bin" ]]; then
+    local cargo_count
+    cargo_count=$(ls -1 "$cargo_bin" 2>/dev/null | wc -l | tr -d ' ')
+    info "Cargo binaries (~/.cargo/bin): $cargo_count"
+    local recent_cargo=0
+    while IFS= read -r bin; do
+      [[ -z "$bin" ]] && continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Cargo binary installed <7 days ago: $(basename "$bin")"
+        recent_cargo=$((recent_cargo + 1))
+      fi
+    done < <(find "$cargo_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
+    [[ "$recent_cargo" -eq 0 ]] && ok "No recently installed cargo binaries"
+  fi
+
+  # Go installed binaries (GOPATH/bin)
+  local gopath_bin=""
+  if command -v go &>/dev/null; then
+    gopath_bin="$(go env GOPATH 2>/dev/null)/bin"
+  fi
+  if [[ -n "$gopath_bin" && -d "$gopath_bin" ]]; then
+    local go_count
+    go_count=$(ls -1 "$gopath_bin" 2>/dev/null | wc -l | tr -d ' ')
+    info "Go binaries (GOPATH/bin): $go_count"
+    local recent_go=0
+    while IFS= read -r bin; do
+      [[ -z "$bin" ]] && continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Go binary installed <7 days ago: $(basename "$bin")"
+        recent_go=$((recent_go + 1))
+      fi
+    done < <(find "$gopath_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
+    [[ "$recent_go" -eq 0 ]] && ok "No recently installed Go binaries"
+  fi
+
+  # uv/pipx user tools (~/.local/bin)
+  local local_bin="$HOME/.local/bin"
+  if [[ -d "$local_bin" ]]; then
+    local local_count
+    local_count=$(ls -1 "$local_bin" 2>/dev/null | wc -l | tr -d ' ')
+    info "User local binaries (~/.local/bin): $local_count"
+    local recent_local=0
+    while IFS= read -r bin; do
+      [[ -z "$bin" ]] && continue
+      local mod_epoch now_epoch age_days
+      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if [[ "$age_days" -lt 7 ]]; then
+        warn "Local binary installed <7 days ago: $(basename "$bin")"
+        recent_local=$((recent_local + 1))
+      fi
+    done < <(find "$local_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
+    [[ "$recent_local" -eq 0 ]] && ok "No recently installed local binaries"
+  fi
+}
+
+check_ai_agent_hooks() {
+  header "AI Agent Configuration"
+
+  local found=0
+
+  # Claude Code global settings — hooks can run arbitrary shell commands
+  local claude_settings="$HOME/.claude/settings.json"
+  if [[ -f "$claude_settings" ]]; then
+    if grep -q '"hooks"' "$claude_settings" 2>/dev/null; then
+      # Extract "command" values from the hooks section
+      local hook_cmds
+      hook_cmds=$(grep '"command"' "$claude_settings" 2>/dev/null \
+        | sed 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' \
+        | grep -v '^{' || true)
+      local hook_count=0
+      while IFS= read -r cmd; do
+        [[ -z "$cmd" ]] && continue
+        hook_count=$((hook_count + 1))
+        # Suspicious: outbound network, shell eval, or obfuscation
+        if echo "$cmd" | grep -qE 'curl|wget|nc |ncat|socat|/dev/tcp|bash -c|sh -c|eval|base64 -d|python.*-c|ruby.*-e|perl.*-e'; then
+          fail "Suspicious Claude Code hook command: $cmd"
+          found=$((found + 1))
+        else
+          info "Claude Code hook: $cmd"
+        fi
+      done <<< "$hook_cmds"
+      [[ "$hook_count" -gt 0 ]] || info "Claude Code hooks section present but no commands found"
+    else
+      ok "No hooks in ~/.claude/settings.json"
+    fi
+  fi
+
+  # Claude Code project-level settings in common workspace locations
+  # A malicious repo can ship .claude/settings.json with hooks that run on every tool call
+  local ws_dirs=("$HOME/workspace" "$HOME/projects" "$HOME/code" "$HOME/src")
+  local proj_hook_count=0
+  for ws in "${ws_dirs[@]}"; do
+    [[ -d "$ws" ]] || continue
+    while IFS= read -r proj_settings; do
+      [[ -f "$proj_settings" ]] || continue
+      if grep -q '"hooks"' "$proj_settings" 2>/dev/null; then
+        local rel_path="${proj_settings#"$HOME/"}"
+        warn "Project-level Claude Code hooks: ~/$rel_path — verify before running claude in this repo"
+        proj_hook_count=$((proj_hook_count + 1))
+        found=$((found + 1))
+      fi
+    done < <(find "$ws" -maxdepth 3 -name "settings.json" -path "*/.claude/*" 2>/dev/null)
+  done
+  [[ "$proj_hook_count" -gt 0 ]] || info "No project-level Claude Code hooks found in workspace dirs"
+
+  # Cursor Rules — can contain prompt injection to redirect AI actions
+  local cursor_rules_dir="$HOME/.cursor/rules"
+  if [[ -d "$cursor_rules_dir" ]]; then
+    local rule_count
+    rule_count=$(find "$cursor_rules_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+    info "Cursor rules: $rule_count file(s) in ~/.cursor/rules/"
+    while IFS= read -r rule_file; do
+      # Classic prompt injection patterns targeting AI models
+      if grep -qiE 'ignore (previous|above|prior|all) (instructions?|rules?)|disregard|override.*instructions?|new instruction' "$rule_file" 2>/dev/null; then
+        warn "Potential prompt injection in Cursor rule: $(basename "$rule_file")"
+        found=$((found + 1))
+      fi
+    done < <(find "$cursor_rules_dir" -type f 2>/dev/null)
+  fi
+
+  # GitHub Copilot repository instructions — injected into every Copilot context
+  local copilot_files=(
+    "$HOME/.github/copilot-instructions.md"
+    ".github/copilot-instructions.md"
+  )
+  for cf in "${copilot_files[@]}"; do
+    if [[ -f "$cf" ]]; then
+      info "GitHub Copilot instructions present: $cf"
+      if grep -qiE 'ignore (previous|above|prior)|disregard|exfiltrate|send.*to.*http' "$cf" 2>/dev/null; then
+        warn "Potential prompt injection in Copilot instructions: $cf"
+        found=$((found + 1))
+      fi
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No suspicious AI agent configurations found"
   fi
 }
 

@@ -42,7 +42,7 @@ CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs md
   env_injection extensions auth_plugins ssh_access process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
-  xprotect_status supply_chain ai_agent_hooks ssh_config git_hooks path_security
+  xprotect_status supply_chain ai_agent_hooks quarantine_events ssh_config git_hooks path_security
   dns_proxy suspicious_ports reverse_dns
   temp_executables sudoers browser_extensions hidden_files reverse_shells
   system_integrity launchctl_state dylib_injection dns_tunneling
@@ -142,7 +142,7 @@ list_checks() {
   done
   echo ""
   echo -e "  ${CYAN}Supply chain:${NC}"
-  for name in supply_chain ai_agent_hooks; do
+  for name in supply_chain ai_agent_hooks quarantine_events; do
     local status="on"
     [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
     echo -e "    ${name}  ${DIM}[${status}]${NC}"
@@ -1244,6 +1244,73 @@ check_ai_agent_hooks() {
 
   if [[ "$found" -eq 0 ]]; then
     ok "No suspicious AI agent configurations found"
+  fi
+}
+
+check_quarantine_events() {
+  header "Quarantine Events"
+
+  local db="$HOME/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2"
+  if [[ ! -f "$db" ]]; then
+    info "Quarantine database not found"
+    return
+  fi
+
+  if ! command -v sqlite3 &>/dev/null; then
+    info "sqlite3 not available — skipping"
+    return
+  fi
+
+  # Mac absolute time epoch starts 2001-01-01, which is 978307200 Unix seconds later
+  local mac_epoch_offset=978307200
+  local lookback_days=14
+  local cutoff_mac
+  cutoff_mac=$(( $(date +%s) - mac_epoch_offset - (lookback_days * 86400) ))
+
+  # Downloads via CLI/programmatic agents bypass browser quarantine security prompts.
+  # Excludes Apple system processes (Gatekeeper, App Store).
+  local cli_downloads
+  cli_downloads=$(sqlite3 -readonly "$db" \
+    "SELECT LSQuarantineAgentName, LSQuarantineDataURLString,
+            datetime(LSQuarantineTimeStamp + $mac_epoch_offset, 'unixepoch', 'localtime')
+     FROM LSQuarantineEvent
+     WHERE LSQuarantineTimeStamp > $cutoff_mac
+       AND (LSQuarantineAgentBundleIdentifier IS NULL
+         OR LSQuarantineAgentBundleIdentifier NOT LIKE 'com.apple.%')
+       AND (LSQuarantineAgentName LIKE 'curl%'
+         OR LSQuarantineAgentName LIKE 'wget%'
+         OR LSQuarantineAgentName LIKE 'python%'
+         OR LSQuarantineAgentName LIKE 'ruby%'
+         OR LSQuarantineAgentName LIKE 'perl%'
+         OR LSQuarantineAgentName LIKE 'bash%'
+         OR LSQuarantineAgentName = 'sh'
+         OR LSQuarantineAgentName = 'zsh'
+         OR LSQuarantineAgentName = 'osascript'
+         OR LSQuarantineAgentName = 'Terminal')
+     ORDER BY LSQuarantineTimeStamp DESC
+     LIMIT 30;" 2>/dev/null || true)
+
+  local total_recent
+  total_recent=$(sqlite3 -readonly "$db" \
+    "SELECT COUNT(*) FROM LSQuarantineEvent WHERE LSQuarantineTimeStamp > $cutoff_mac;" \
+    2>/dev/null || echo "0")
+  total_recent="${total_recent//[^0-9]/}"
+
+  local found=0
+  if [[ -n "$cli_downloads" ]]; then
+    warn "Programmatic downloads in the last ${lookback_days} days — verify each was intentional:"
+    while IFS='|' read -r agent url timestamp; do
+      [[ -z "$url" ]] && continue
+      echo -e "      ${DIM}[${timestamp}] ${agent}: ${url}${NC}"
+      found=$((found + 1))
+    done <<< "$cli_downloads"
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No CLI-sourced downloads in the last ${lookback_days} days"
+    [[ "${total_recent:-0}" -gt 0 ]] && info "Recent downloads (browser/App Store): $total_recent"
+  else
+    info "Total recent downloads (all sources): $total_recent"
   fi
 }
 

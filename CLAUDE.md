@@ -51,6 +51,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | SSH | `ssh_config` | ProxyCommand (CVE-2025-61984), SendEnv/SetEnv, forwarding |
 | Supply Chain | `supply_chain` | VS Code/Cursor extensions, npm globals, brew taps, MCP servers, pip, cargo binaries, Go binaries, ~/.local/bin |
 | Supply Chain | `ai_agent_hooks` | Claude Code settings.json hooks, Cursor rules prompt injection, GitHub Copilot instructions injection |
+| Supply Chain | `quarantine_events` | QuarantineEventsV2 DB: files downloaded via curl/wget/python/bash in the last 14 days (CLI downloads bypass browser security UI) |
 | Config Abuse | `git_hooks` | Global hooks path + workspace repo hooks |
 | Config Abuse | `path_security` | World-writable, missing, or empty PATH entries |
 | Config Abuse | `dns_proxy` | DNS resolvers, system web/SOCKS proxy settings |

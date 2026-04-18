@@ -986,54 +986,42 @@ check_login_items() {
 
 # ─── Supply chain checks ───
 
+# Check a directory for recently installed items and report any installed within $age days.
+# Usage: _check_recent_installs singular plural info_label dir [find_args...]
+_check_recent_installs() {
+  local singular="$1" plural="$2" info_label="$3" dir="$4"
+  shift 4
+  [[ -d "$dir" ]] || return
+  local count now_epoch
+  count=$(find "$dir" -maxdepth 1 "$@" 2>/dev/null | wc -l | tr -d ' ')
+  info "${info_label}: $count"
+  now_epoch=$(date +%s)
+  local recent=0
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    local mod_epoch age_days
+    mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
+    age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+    if [[ "$age_days" -lt 7 ]]; then
+      warn "${singular} installed <7 days ago: $(basename "$item")"
+      recent=$((recent + 1))
+    fi
+  done < <(find "$dir" -maxdepth 1 "$@" 2>/dev/null)
+  [[ "$recent" -eq 0 ]] && ok "No recently installed ${plural}"
+}
+
 check_supply_chain() {
   header "Supply Chain"
 
   # VS Code extensions
   local vscode_dir="$HOME/.vscode/extensions"
-  if [[ -d "$vscode_dir" ]]; then
-    local ext_count
-    ext_count=$(ls -1d "$vscode_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
-    info "VS Code: $ext_count extension(s) installed"
-    local recent=0
-    while IFS= read -r ext; do
-      [[ -d "$ext" ]] || continue
-      local mod_epoch now_epoch age_days
-      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
-      if [[ "$age_days" -lt 7 ]]; then
-        warn "VS Code extension installed <7 days ago: $(basename "$ext")"
-        recent=$((recent + 1))
-      fi
-    done < <(ls -1d "$vscode_dir"/*/ 2>/dev/null)
-    if [[ "$recent" -eq 0 ]]; then
-      ok "No recently installed VS Code extensions"
-    fi
-  fi
+  _check_recent_installs "VS Code extension" "VS Code extensions" "VS Code extensions" \
+    "$vscode_dir" -mindepth 1 -type d
 
   # Cursor extensions (~/.cursor/extensions — same format as VS Code)
   local cursor_dir="$HOME/.cursor/extensions"
-  if [[ -d "$cursor_dir" ]]; then
-    local ext_count
-    ext_count=$(ls -1d "$cursor_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
-    info "Cursor: $ext_count extension(s) installed"
-    local recent=0
-    while IFS= read -r ext; do
-      [[ -d "$ext" ]] || continue
-      local mod_epoch now_epoch age_days
-      mod_epoch=$(stat -f '%m' "$ext" 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
-      if [[ "$age_days" -lt 7 ]]; then
-        warn "Cursor extension installed <7 days ago: $(basename "$ext")"
-        recent=$((recent + 1))
-      fi
-    done < <(ls -1d "$cursor_dir"/*/ 2>/dev/null)
-    if [[ "$recent" -eq 0 ]]; then
-      ok "No recently installed Cursor extensions"
-    fi
-  fi
+  _check_recent_installs "Cursor extension" "Cursor extensions" "Cursor extensions" \
+    "$cursor_dir" -mindepth 1 -type d
 
   # npm globals
   if command -v npm &>/dev/null; then
@@ -1097,69 +1085,23 @@ check_supply_chain() {
 
   # Rust/cargo installed binaries
   local cargo_bin="$HOME/.cargo/bin"
-  if [[ -d "$cargo_bin" ]]; then
-    local cargo_count
-    cargo_count=$(ls -1 "$cargo_bin" 2>/dev/null | wc -l | tr -d ' ')
-    info "Cargo binaries (~/.cargo/bin): $cargo_count"
-    local recent_cargo=0
-    while IFS= read -r bin; do
-      [[ -z "$bin" ]] && continue
-      local mod_epoch now_epoch age_days
-      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
-      if [[ "$age_days" -lt 7 ]]; then
-        warn "Cargo binary installed <7 days ago: $(basename "$bin")"
-        recent_cargo=$((recent_cargo + 1))
-      fi
-    done < <(find "$cargo_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
-    [[ "$recent_cargo" -eq 0 ]] && ok "No recently installed cargo binaries"
-  fi
+  _check_recent_installs "cargo binary" "cargo binaries" "Cargo binaries (~/.cargo/bin)" \
+    "$cargo_bin" -type f -perm +111
 
   # Go installed binaries (GOPATH/bin)
   local gopath_bin=""
   if command -v go &>/dev/null; then
     gopath_bin="$(go env GOPATH 2>/dev/null)/bin"
   fi
-  if [[ -n "$gopath_bin" && -d "$gopath_bin" ]]; then
-    local go_count
-    go_count=$(ls -1 "$gopath_bin" 2>/dev/null | wc -l | tr -d ' ')
-    info "Go binaries (GOPATH/bin): $go_count"
-    local recent_go=0
-    while IFS= read -r bin; do
-      [[ -z "$bin" ]] && continue
-      local mod_epoch now_epoch age_days
-      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
-      if [[ "$age_days" -lt 7 ]]; then
-        warn "Go binary installed <7 days ago: $(basename "$bin")"
-        recent_go=$((recent_go + 1))
-      fi
-    done < <(find "$gopath_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
-    [[ "$recent_go" -eq 0 ]] && ok "No recently installed Go binaries"
+  if [[ -n "$gopath_bin" ]]; then
+    _check_recent_installs "Go binary" "Go binaries" "Go binaries (GOPATH/bin)" \
+      "$gopath_bin" -type f -perm +111
   fi
 
   # uv/pipx user tools (~/.local/bin)
   local local_bin="$HOME/.local/bin"
-  if [[ -d "$local_bin" ]]; then
-    local local_count
-    local_count=$(ls -1 "$local_bin" 2>/dev/null | wc -l | tr -d ' ')
-    info "User local binaries (~/.local/bin): $local_count"
-    local recent_local=0
-    while IFS= read -r bin; do
-      [[ -z "$bin" ]] && continue
-      local mod_epoch now_epoch age_days
-      mod_epoch=$(stat -f '%m' "$bin" 2>/dev/null || echo 0)
-      now_epoch=$(date +%s)
-      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
-      if [[ "$age_days" -lt 7 ]]; then
-        warn "Local binary installed <7 days ago: $(basename "$bin")"
-        recent_local=$((recent_local + 1))
-      fi
-    done < <(find "$local_bin" -maxdepth 1 -type f -perm +111 2>/dev/null)
-    [[ "$recent_local" -eq 0 ]] && ok "No recently installed local binaries"
-  fi
+  _check_recent_installs "local binary" "local binaries" "User local binaries (~/.local/bin)" \
+    "$local_bin" -type f -perm +111
 }
 
 check_ai_agent_hooks() {

@@ -42,7 +42,7 @@ CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs md
   env_injection extensions auth_plugins ssh_access process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
-  xprotect_status supply_chain ai_agent_hooks quarantine_events ssh_config git_hooks path_security
+  xprotect_status supply_chain trusted_certs ai_agent_hooks quarantine_events ssh_config git_hooks path_security
   dns_proxy suspicious_ports reverse_dns
   temp_executables sudoers browser_extensions hidden_files reverse_shells
   system_integrity launchctl_state dylib_injection dns_tunneling
@@ -142,7 +142,7 @@ list_checks() {
   done
   echo ""
   echo -e "  ${CYAN}Supply chain:${NC}"
-  for name in supply_chain ai_agent_hooks quarantine_events; do
+  for name in supply_chain trusted_certs ai_agent_hooks quarantine_events; do
     local status="on"
     [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
     echo -e "    ${name}  ${DIM}[${status}]${NC}"
@@ -684,8 +684,8 @@ check_process_paths() {
     if echo "$binary" | grep -qE '^/(System|Library|Applications|usr|sbin|bin|opt/homebrew|private|cores)/'; then
       continue
     fi
-    # Skip known user paths
-    if echo "$binary" | grep -qE '^\.(nvm|vscode|cache|foundry|local/bin|cargo)/|/node_modules/|claude|npm'; then
+    # Skip known user paths (use /\. to match dotfiles inside absolute paths)
+    if echo "$binary" | grep -qE '/\.(nvm|vscode|cache|foundry|local/bin|cargo)/|/node_modules/|/Claude\.app/|/\.claude/|/\.npm/'; then
       continue
     fi
     # Skip processes without a path
@@ -985,6 +985,60 @@ check_login_items() {
 }
 
 # ─── Supply chain checks ───
+
+check_trusted_certs() {
+  header "Trusted Root Certificates"
+
+  local found=0
+
+  # Known HTTPS interception proxy CA names (installed by developer MITM tools)
+  local PROXY_CA_PATTERNS=("mitmproxy" "Charles Proxy" "PortSwigger" "Proxyman" "Fiddler" "MITM" "Burp")
+
+  # User-level trust overrides — no root required
+  # mitmproxy, Charles, Burp Suite, and Proxyman install their CA here
+  local user_trust
+  user_trust=$(security dump-trust-settings 2>/dev/null || true)
+
+  if [[ -n "$user_trust" && "$user_trust" != *"No Trust Settings"* ]]; then
+    while IFS= read -r line; do
+      [[ "$line" =~ ^Cert\ [0-9]+:\ (.*) ]] || continue
+      local cert_name="${BASH_REMATCH[1]}"
+      [[ -z "$cert_name" ]] && continue
+
+      local is_proxy=false
+      for pat in "${PROXY_CA_PATTERNS[@]}"; do
+        if [[ "$cert_name" == *"$pat"* ]]; then
+          is_proxy=true
+          break
+        fi
+      done
+
+      if $is_proxy; then
+        warn "HTTPS interception proxy CA trusted: $cert_name — all TLS traffic can be decrypted"
+      else
+        warn "Custom trusted certificate: $cert_name — verify this is expected"
+      fi
+      found=$((found + 1))
+    done <<< "$user_trust"
+  fi
+
+  # Admin-level trust settings — MDM and enterprise tools install here
+  local admin_trust
+  admin_trust=$(security dump-trust-settings -d 2>/dev/null || true)
+  if [[ -n "$admin_trust" && "$admin_trust" != *"No Trust Settings"* ]]; then
+    while IFS= read -r line; do
+      [[ "$line" =~ ^Cert\ [0-9]+:\ (.*) ]] || continue
+      local cert_name="${BASH_REMATCH[1]}"
+      [[ -z "$cert_name" ]] && continue
+      warn "Admin-trusted certificate (system-wide MITM risk): $cert_name"
+      found=$((found + 1))
+    done <<< "$admin_trust"
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    ok "No custom trusted root certificates"
+  fi
+}
 
 # Check a directory for recently installed items and report any installed within $age days.
 # Usage: _check_recent_installs singular plural info_label dir [find_args...]

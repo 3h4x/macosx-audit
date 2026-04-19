@@ -1045,7 +1045,7 @@ check_trusted_certs() {
 _check_recent_installs() {
   local singular="$1" plural="$2" info_label="$3" dir="$4"
   shift 4
-  [[ -d "$dir" ]] || return
+  [[ -d "$dir" ]] || return 0
   local count now_epoch
   count=$(find "$dir" -maxdepth 1 "$@" 2>/dev/null | wc -l | tr -d ' ')
   info "${info_label}: $count"
@@ -1061,7 +1061,7 @@ _check_recent_installs() {
       recent=$((recent + 1))
     fi
   done < <(find "$dir" -maxdepth 1 "$@" 2>/dev/null)
-  [[ "$recent" -eq 0 ]] && ok "No recently installed ${plural}"
+  if [[ "$recent" -eq 0 ]]; then ok "No recently installed ${plural}"; fi
 }
 
 check_supply_chain() {

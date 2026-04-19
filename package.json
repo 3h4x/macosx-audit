@@ -5,5 +5,8 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "test": "bash tests/run_tests.sh"
+  },
+  "devDependencies": {
+    "bats": "^1.13.0"
   }
 }

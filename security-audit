@@ -553,7 +553,7 @@ check_shell_profiles() {
         fi
       done
     done
-    info ".zshrc.d/ — $(ls "$HOME/.zshrc.d" | wc -l | tr -d ' ') files checked"
+    info ".zshrc.d/ — $(find "$HOME/.zshrc.d" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ') files checked"
   fi
 }
 
@@ -587,11 +587,11 @@ check_env_injection() {
 check_extensions() {
   header "Kernel & System Extensions"
 
-  kext_count=$(ls /Library/Extensions/ 2>/dev/null | grep -c '.kext$' || true)
+  kext_count=$(find /Library/Extensions -maxdepth 1 -name '*.kext' -type d 2>/dev/null | wc -l | tr -d ' ' || true)
   kext_count=${kext_count:-0}
   if [[ "$kext_count" -gt 0 ]]; then
     info "$kext_count kernel extension(s) in /Library/Extensions:"
-    ls /Library/Extensions/*.kext 2>/dev/null | while read -r k; do echo "      $(basename "$k")"; done
+    find /Library/Extensions -maxdepth 1 -name '*.kext' -type d 2>/dev/null | while read -r k; do echo "      $(basename "$k")"; done
   else
     ok "No third-party kernel extensions"
   fi
@@ -608,7 +608,7 @@ check_extensions() {
 check_auth_plugins() {
   header "Authorization Plugins"
 
-  auth_plugins=$(ls /Library/Security/SecurityAgentPlugins/ 2>/dev/null | head -20)
+  auth_plugins=$(find /Library/Security/SecurityAgentPlugins -maxdepth 1 -mindepth 1 -print0 2>/dev/null | xargs -0 -I{} basename {} | head -20)
   if [[ -z "$auth_plugins" ]]; then
     ok "No authorization plugins"
   else
@@ -646,7 +646,7 @@ check_process_integrity() {
   while IFS= read -r line; do
     local pid comm binary
     pid=$(echo "$line" | awk '{print $1}')
-    comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    comm=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^[[:space:]]*//')
     [[ -z "$comm" ]] && continue
     [[ "$comm" == "-" || "$comm" == "/kernel" ]] && continue
     # Extract binary path (first word of args)
@@ -675,7 +675,7 @@ check_process_paths() {
   while IFS= read -r line; do
     local pid comm binary
     pid=$(echo "$line" | awk '{print $1}')
-    comm=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    comm=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^[[:space:]]*//')
     [[ -z "$comm" ]] && continue
     # Extract binary path (first word of args)
     binary="${comm%% *}"
@@ -725,22 +725,22 @@ _identify_ip() {
     104.16.*|104.17.*|104.18.*|104.19.*|104.20.*|104.21.*|104.22.*|104.23.*|104.24.*|104.25.*|104.26.*|104.27.*) echo "Cloudflare" ;;
     172.64.*|172.65.*|172.66.*|172.67.*|172.68.*|172.69.*|172.70.*|172.71.*) echo "Cloudflare" ;;
     162.159.*) echo "Cloudflare" ;;
-    2606:4700:*|2606:4700::*) echo "Cloudflare" ;;
+    2606:4700:*) echo "Cloudflare" ;;
     2607:6bc0::*) echo "Cloudflare" ;;
     # Google
     142.250.*|142.251.*|172.217.*|172.253.*|216.58.*|74.125.*|64.233.*) echo "Google" ;;
     2a00:1450:*) echo "Google" ;;
+    # Akamai (must precede broad AWS 23.* range)
+    23.2[0-9].*|23.3[0-9].*|23.4[0-9].*|23.5[0-9].*|23.6[0-9].*) echo "Akamai" ;;
+    # Microsoft/GitHub (must precede broad AWS 13.* and 52.* ranges)
+    20.*|40.*|52.*|13.10[4-7].*|140.82.1[1-2]*) echo "Microsoft" ;;
     # AWS
-    3.*|13.*|15.*|16.*|18.*|23.*|34.*|35.*|43.*|44.*|46.*|47.*|50.*|51.*|52.*|54.*|99.*|100.2[0-7].*) echo "AWS" ;;
+    3.*|13.*|15.*|16.*|18.*|23.*|34.*|35.*|43.*|44.*|46.*|47.*|50.*|51.*|54.*|99.*|100.2[0-7].*) echo "AWS" ;;
     # Telegram
     149.154.16[4-9].*|149.154.17[0-5].*) echo "Telegram" ;;
     # Apple
     17.*) echo "Apple" ;;
     2620:149:*) echo "Apple" ;;
-    # Microsoft/GitHub
-    20.*|40.*|52.*|13.10[4-7].*|140.82.1[1-2]*) echo "Microsoft" ;;
-    # Akamai
-    23.2[0-9].*|23.3[0-9].*|23.4[0-9].*|23.5[0-9].*|23.6[0-9].*) echo "Akamai" ;;
     # Local link
     fe80:*) echo "local-link" ;;
     # Private
@@ -792,7 +792,7 @@ _resolve_process_name() {
       local script="${args#* }"
       case "$script" in
         *playwright*) echo "Playwright MCP" && return ;;
-        *next-server*|next-server*) echo "Next.js" && return ;;
+        *next-server*) echo "Next.js" && return ;;
         *webpack*) echo "Webpack" && return ;;
         *vite*) echo "Vite" && return ;;
         *tsx*|*ts-node*) echo "Node (TS)" && return ;;
@@ -1120,7 +1120,7 @@ check_supply_chain() {
       if [[ "$server_count" -gt 0 ]]; then
         warn "MCP config with $server_count server(s): $(basename "$(dirname "$mcp_file")")/$(basename "$mcp_file")"
         grep '"command"' "$mcp_file" 2>/dev/null | while read -r line; do
-          echo "      $(echo "$line" | xargs)"
+          echo "      $(echo "$line" | sed 's/^[[:space:]]*//')"
         done
       fi
     fi
@@ -1650,7 +1650,7 @@ _resolve_chromium_ext_name() {
   # Resolve a Chromium extension ID to its human-readable name
   local ext_dir="$1"
   local ver_dir manifest name msg_key msgs
-  ver_dir=$(ls -1d "$ext_dir"/*/ 2>/dev/null | tail -1)
+  ver_dir=$(find "$ext_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)
   [[ -z "$ver_dir" ]] && echo "unknown" && return
   manifest="$ver_dir/manifest.json"
   [[ ! -f "$manifest" ]] && echo "unknown" && return
@@ -1687,7 +1687,7 @@ check_browser_extensions() {
   local chrome_dir="$HOME/Library/Application Support/Google/Chrome/Default/Extensions"
   if [[ -d "$chrome_dir" ]]; then
     local count
-    count=$(ls -1d "$chrome_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    count=$(find "$chrome_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
     count=${count:-0}
     info "Chrome: $count extension(s)"
     total=$((total + count))
@@ -1703,14 +1703,14 @@ check_browser_extensions() {
         warn "Chrome extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
         recent=$((recent + 1))
       fi
-    done < <(ls -1d "$chrome_dir"/*/ 2>/dev/null)
+    done < <(find "$chrome_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
   fi
 
   # Brave extensions
   local brave_dir="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/Default/Extensions"
   if [[ -d "$brave_dir" ]]; then
     local count
-    count=$(ls -1d "$brave_dir"/*/ 2>/dev/null | wc -l | tr -d ' ')
+    count=$(find "$brave_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
     count=${count:-0}
     info "Brave: $count extension(s)"
     total=$((total + count))
@@ -1726,7 +1726,7 @@ check_browser_extensions() {
         warn "Brave extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
         recent=$((recent + 1))
       fi
-    done < <(ls -1d "$brave_dir"/*/ 2>/dev/null)
+    done < <(find "$brave_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
   fi
 
   # Firefox extensions
@@ -1737,9 +1737,9 @@ check_browser_extensions() {
       local ext_dir="$profile/extensions"
       [[ -d "$ext_dir" ]] || continue
       local pcount
-      pcount=$(ls -1 "$ext_dir" 2>/dev/null | wc -l | tr -d ' ')
+      pcount=$(find "$ext_dir" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
       fx_count=$((fx_count + pcount))
-    done < <(ls -1d "$firefox_dir"/*/ 2>/dev/null)
+    done < <(find "$firefox_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
     if [[ "$fx_count" -gt 0 ]]; then
       info "Firefox: $fx_count extension(s)"
       total=$((total + fx_count))
@@ -1750,7 +1750,7 @@ check_browser_extensions() {
   local safari_dir="$HOME/Library/Safari/Extensions"
   if [[ -d "$safari_dir" ]]; then
     local count
-    count=$(ls -1 "$safari_dir" 2>/dev/null | wc -l | tr -d ' ')
+    count=$(find "$safari_dir" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
     count=${count:-0}
     if [[ "$count" -gt 0 ]]; then
       info "Safari: $count extension(s)"
@@ -2102,7 +2102,7 @@ check_process_spoofing() {
     local pid comm args binary
     pid=$(echo "$line" | awk '{print $1}')
     comm=$(echo "$line" | awk '{print $2}')
-    args=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | xargs)
+    args=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | sed 's/^[[:space:]]*//')
     binary="${args%% *}"
 
     [[ -z "$comm" || -z "$binary" || "$binary" != /* ]] && continue
@@ -2157,7 +2157,7 @@ check_deleted_running() {
   while IFS= read -r line; do
     local pid binary
     pid=$(echo "$line" | awk '{print $1}')
-    binary=$(echo "$line" | awk '{$1=""; print $0}' | xargs)
+    binary=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^[[:space:]]*//')
     binary="${binary%% *}"
     [[ -z "$binary" || "$binary" != /* ]] && continue
     # Skip Apple system paths (updates leave stale references, not suspicious)

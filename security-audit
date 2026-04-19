@@ -1054,7 +1054,8 @@ _check_recent_installs() {
   while IFS= read -r item; do
     [[ -z "$item" ]] && continue
     local mod_epoch age_days
-    mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
+    mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || stat -c '%Y' "$item" 2>/dev/null || echo 0)
+    [[ "$mod_epoch" =~ ^[0-9]+$ ]] || mod_epoch=0
     age_days=$(( (now_epoch - mod_epoch) / 86400 ))
     if [[ "$age_days" -lt 7 ]]; then
       warn "${singular} installed <7 days ago: $(basename "$item")"
@@ -1140,7 +1141,7 @@ check_supply_chain() {
   # Rust/cargo installed binaries
   local cargo_bin="$HOME/.cargo/bin"
   _check_recent_installs "cargo binary" "cargo binaries" "Cargo binaries (~/.cargo/bin)" \
-    "$cargo_bin" -type f -perm +111
+    "$cargo_bin" -type f -perm -111
 
   # Go installed binaries (GOPATH/bin)
   local gopath_bin=""
@@ -1149,13 +1150,13 @@ check_supply_chain() {
   fi
   if [[ -n "$gopath_bin" ]]; then
     _check_recent_installs "Go binary" "Go binaries" "Go binaries (GOPATH/bin)" \
-      "$gopath_bin" -type f -perm +111
+      "$gopath_bin" -type f -perm -111
   fi
 
   # uv/pipx user tools (~/.local/bin)
   local local_bin="$HOME/.local/bin"
   _check_recent_installs "local binary" "local binaries" "User local binaries (~/.local/bin)" \
-    "$local_bin" -type f -perm +111
+    "$local_bin" -type f -perm -111
 }
 
 check_ai_agent_hooks() {
@@ -1581,7 +1582,7 @@ check_temp_executables() {
         info "Executable in temp dir: $f (${age_hours}h old)"
       fi
       found=$((found + 1))
-    done < <(find "$dir" -maxdepth 3 -type f \( -perm +111 -o -name "*.sh" -o -name "*.py" -o -name "*.rb" -o -name "*.pl" \) 2>/dev/null)
+    done < <(find "$dir" -maxdepth 3 -type f \( -perm -111 -o -name "*.sh" -o -name "*.py" -o -name "*.rb" -o -name "*.pl" \) 2>/dev/null)
   done
 
   if [[ "$found" -eq 0 ]]; then

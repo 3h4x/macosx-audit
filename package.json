@@ -1,0 +1,6 @@
+{
+  "name": "macosx-audit",
+  "version": "1.0.0",
+  "description": "macOS security audit script",
+  "packageManager": "pnpm@10.33.0"
+}

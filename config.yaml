@@ -29,6 +29,7 @@ login_items: true             # Login items (limited without root)
 
 # --- Supply chain ---
 supply_chain: true            # VS Code extensions, npm globals, brew taps, MCP servers, pip
+shell_plugins: true           # oh-my-zsh custom plugins, zinit, zplug, antigen bundles
 
 # --- Configuration abuse ---
 ssh_config: true              # ~/.ssh/config ProxyCommand, forwarding (CVE-2025-61984)

@@ -34,7 +34,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Category | Check Name | Details |
 |----------|------------|---------|
 | System Hardening | `system_hardening` | SIP, Gatekeeper, FileVault, macOS Firewall, software update auto-check |
-| System Hardening | `sharing_services` | Automatic login, guest account, Remote Login (SSH), Screen Sharing (VNC), File Sharing (SMB/AFP) |
+| System Hardening | `sharing_services` | Automatic login, guest account, Remote Login (SSH), Screen Sharing (VNC), File Sharing (SMB/AFP), AirPlay Receiver (AirBorne CVE surface), AirDrop mode |
 | Persistence | `launch_agents` | LaunchAgents/Daemons with allowlist + Apple path validation |
 | Persistence | `cron_jobs` | Cron, at jobs, /etc/crontab |
 | Persistence | `mdm_profiles` | MDM/configuration profiles |
@@ -48,6 +48,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Extensions | `extensions` | Kernel extensions, system extensions |
 | Extensions | `auth_plugins` | Authorization plugins |
 | SSH | `ssh_access` | authorized_keys entries |
+| SSH | `ssh_keys` | Private key passphrase protection, file permissions (600/400), deprecated DSA keys |
 | SSH | `ssh_config` | ProxyCommand (CVE-2025-61984), SendEnv/SetEnv, forwarding |
 | Supply Chain | `supply_chain` | VS Code/Cursor extensions, npm globals, brew taps, MCP servers, pip, cargo binaries, Go binaries, ~/.local/bin |
 | Supply Chain | `trusted_certs` | Custom trusted root CAs (user + admin domains): detects HTTPS interception proxies (mitmproxy, Charles, Burp Suite, Proxyman) and MDM-installed surveillance CAs |

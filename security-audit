@@ -39,7 +39,7 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 # ─── Check registry ───
 
 CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles
-  env_injection extensions auth_plugins ssh_access process_integrity
+  env_injection extensions auth_plugins ssh_access ssh_keys process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
   xprotect_status supply_chain shell_plugins trusted_certs ai_agent_hooks quarantine_events ssh_config git_hooks path_security
@@ -127,7 +127,7 @@ list_checks() {
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
   for name in system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles \
-    env_injection extensions auth_plugins ssh_access process_integrity \
+    env_injection extensions auth_plugins ssh_access ssh_keys process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
     [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
@@ -342,6 +342,40 @@ check_sharing_services() {
     warn "File Sharing is enabled (SMB/AFP listener detected)"
   else
     ok "File Sharing disabled"
+  fi
+
+  # AirPlay Receiver (macOS 12+) — ControlCenter listens on TCP 5000 and 7000.
+  # Binding to *:port means any LAN device can initiate AirPlay sessions.
+  # The "AirBorne" vulnerability chain (Oligo Security, 2025) achieved zero-click
+  # RCE via malformed AirPlay packets on devices with this receiver enabled.
+  # Disable: System Settings > General > AirDrop & Handoff > AirPlay Receiver (off).
+  local airplay_addr
+  airplay_addr=$(lsof -i TCP:7000 -sTCP:LISTEN -nP 2>/dev/null | awk 'NR>1 {print $9; exit}')
+  if [[ -z "$airplay_addr" ]]; then
+    airplay_addr=$(lsof -i TCP:5000 -sTCP:LISTEN -nP 2>/dev/null | awk 'NR>1 {print $9; exit}')
+  fi
+  if [[ -n "$airplay_addr" ]]; then
+    if [[ "$airplay_addr" == "*:"* ]]; then
+      warn "AirPlay Receiver listening on all interfaces ($airplay_addr) — LAN-adjacent RCE surface (AirBorne CVEs)"
+    else
+      info "AirPlay Receiver listening on $airplay_addr"
+    fi
+  else
+    ok "AirPlay Receiver not listening"
+  fi
+
+  # AirDrop discovery mode — "Everyone" allows any nearby Apple device to see this Mac.
+  # Absent key = system default ("Contacts Only"), which is safe.
+  local airdrop_mode
+  airdrop_mode=$(defaults read com.apple.sharingd DiscoverableMode 2>/dev/null || true)
+  if [[ "$airdrop_mode" == "Everyone" ]]; then
+    warn "AirDrop set to Everyone — any nearby Apple device can attempt to send files"
+  elif [[ "$airdrop_mode" == "Off" ]]; then
+    ok "AirDrop is off"
+  elif [[ -z "$airdrop_mode" || "$airdrop_mode" == "Contacts Only" ]]; then
+    ok "AirDrop limited to Contacts (or off by default)"
+  else
+    info "AirDrop discovery mode: $airdrop_mode"
   fi
 }
 
@@ -634,6 +668,62 @@ check_ssh_access() {
     fi
   else
     ok "No authorized_keys file"
+  fi
+}
+
+check_ssh_keys() {
+  header "SSH Private Keys"
+
+  local ssh_dir="$HOME/.ssh"
+  if [[ ! -d "$ssh_dir" ]]; then
+    ok "No ~/.ssh directory"
+    return
+  fi
+
+  local found=0 key_count=0
+
+  while IFS= read -r keyfile; do
+    # Skip public keys, authorized_keys, known_hosts, config files
+    [[ "$keyfile" == *.pub ]] && continue
+    [[ "$(basename "$keyfile")" =~ ^(authorized_keys|known_hosts|config|environment)$ ]] && continue
+
+    # Must look like a PEM or OpenSSH private key
+    local header_line
+    header_line=$(head -1 "$keyfile" 2>/dev/null || true)
+    [[ "$header_line" == "-----BEGIN"*"PRIVATE KEY-----" ]] || continue
+
+    key_count=$((key_count + 1))
+    local key_name
+    key_name=$(basename "$keyfile")
+
+    # Permissions check — private keys must not be group/world readable
+    local perms
+    perms=$(stat -f '%OLp' "$keyfile" 2>/dev/null || stat -c '%a' "$keyfile" 2>/dev/null || echo "")
+    if [[ -n "$perms" ]] && [[ "$perms" != "600" && "$perms" != "400" ]]; then
+      warn "SSH private key has loose permissions ($perms): $key_name — run: chmod 600 '$keyfile'"
+      found=$((found + 1))
+    fi
+
+    # Deprecated DSA keys (removed from OpenSSH 9.0+, weak at 1024 bits)
+    if echo "$header_line" | grep -q "DSA PRIVATE KEY"; then
+      warn "Deprecated DSA private key: $key_name — replace with ed25519 or RSA 4096"
+      found=$((found + 1))
+    fi
+
+    # Passphrase check — ssh-keygen -y with empty passphrase exits 0 only if unencrypted
+    # Suppress all output; a non-zero exit means the key is protected.
+    if ssh-keygen -y -P "" -f "$keyfile" &>/dev/null; then
+      fail "SSH private key has NO passphrase: $key_name — anyone with filesystem access can use this key"
+      found=$((found + 1))
+    else
+      info "SSH private key protected by passphrase: $key_name"
+    fi
+  done < <(find "$ssh_dir" -maxdepth 2 -type f 2>/dev/null)
+
+  if [[ "$key_count" -eq 0 ]]; then
+    info "No private keys found in ~/.ssh/"
+  elif [[ "$found" -eq 0 ]]; then
+    ok "All SSH private keys have passphrases and correct permissions"
   fi
 }
 
@@ -1121,7 +1211,7 @@ check_supply_chain() {
       if [[ "$server_count" -gt 0 ]]; then
         warn "MCP config with $server_count server(s): $(basename "$(dirname "$mcp_file")")/$(basename "$mcp_file")"
         grep '"command"' "$mcp_file" 2>/dev/null | while read -r line; do
-          echo "      $(echo "$line" | sed 's/^[[:space:]]*//')"
+          echo "      ${line#"${line%%[! ]*}"}"
         done
       fi
     fi

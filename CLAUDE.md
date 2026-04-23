@@ -35,6 +35,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 |----------|------------|---------|
 | System Hardening | `system_hardening` | SIP, Gatekeeper, FileVault, macOS Firewall, software update auto-check |
 | System Hardening | `sharing_services` | Automatic login, guest account, Remote Login (SSH), Screen Sharing (VNC), File Sharing (SMB/AFP), AirPlay Receiver (AirBorne CVE surface), AirDrop mode |
+| System Hardening | `keychain_security` | Login keychain lock-on-sleep, idle auto-lock timeout, non-default keychains |
 | Persistence | `launch_agents` | LaunchAgents/Daemons with allowlist + Apple path validation |
 | Persistence | `cron_jobs` | Cron, at jobs, /etc/crontab |
 | Persistence | `mdm_profiles` | MDM/configuration profiles |

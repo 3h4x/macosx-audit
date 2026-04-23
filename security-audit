@@ -38,7 +38,7 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
 # ─── Check registry ───
 
-CHECKS=(system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles
+CHECKS=(system_hardening sharing_services screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
   env_injection extensions auth_plugins ssh_access ssh_keys process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
@@ -126,7 +126,7 @@ list_checks() {
   echo -e "${BOLD}Available checks:${NC}"
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
-  for name in system_hardening sharing_services screensaver launch_agents cron_jobs mdm_profiles shell_profiles \
+  for name in system_hardening sharing_services screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles \
     env_injection extensions auth_plugins ssh_access ssh_keys process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
@@ -438,6 +438,71 @@ check_screensaver() {
     else
       ok "Screensaver activates after ${idle_min} minute(s)"
     fi
+  fi
+}
+
+check_keychain_security() {
+  header "Keychain Security"
+
+  local login_kc="$HOME/Library/Keychains/login.keychain-db"
+  [[ ! -f "$login_kc" ]] && login_kc="$HOME/Library/Keychains/login.keychain"
+
+  if [[ ! -f "$login_kc" ]]; then
+    info "No login keychain found"
+    return
+  fi
+
+  local kc_info issues=false
+  kc_info=$(security show-keychain-info "$login_kc" 2>&1 || true)
+
+  # Lock on sleep: if absent the keychain stays unlocked when the display sleeps,
+  # allowing any process that wakes the session to access secrets without re-auth.
+  if echo "$kc_info" | grep -q "lock-on-sleep"; then
+    ok "Login keychain locks on sleep"
+  else
+    warn "Login keychain does not lock on sleep — fix: security set-keychain-settings -l '$login_kc'"
+    issues=true
+  fi
+
+  # Idle auto-lock: "no-timeout" means the keychain never auto-locks while the session
+  # is active; malware or a stolen session token can read secrets at any time.
+  if echo "$kc_info" | grep -q "no-timeout"; then
+    warn "Login keychain has no idle timeout — fix: security set-keychain-settings -t 300 '$login_kc'"
+    issues=true
+  else
+    local timeout_val
+    timeout_val=$(echo "$kc_info" | grep -oE 'timeout=[0-9]+' | grep -oE '[0-9]+' || echo "")
+    if [[ -n "$timeout_val" ]]; then
+      if [[ "$timeout_val" -gt 3600 ]]; then
+        warn "Login keychain idle timeout is ${timeout_val}s (>1 hour) — fix: security set-keychain-settings -t 300 '$login_kc'"
+        issues=true
+      else
+        ok "Login keychain auto-locks after ${timeout_val}s of idle"
+      fi
+    fi
+  fi
+
+  # Non-default keychains — unexpected additions beyond the standard Apple set could be
+  # used by malware to intercept or harvest credentials (e.g. a shadow keychain injected
+  # via DYLD or installer scripts).
+  local unusual_count=0
+  while IFS= read -r kc; do
+    kc=$(echo "$kc" | tr -d '"' | sed 's/^[[:space:]]*//')
+    [[ -z "$kc" ]] && continue
+    case "$kc" in
+      */Library/Keychains/login.keychain*|\
+      */Library/Keychains/System.keychain|\
+      */Library/Keychains/SystemRootCertificates.keychain)
+        ;;
+      *)
+        warn "Non-default keychain: $kc"
+        unusual_count=$((unusual_count + 1))
+        ;;
+    esac
+  done < <(security list-keychains 2>/dev/null)
+
+  if ! $issues && [[ "$unusual_count" -eq 0 ]]; then
+    ok "Keychain configuration looks secure"
   fi
 }
 

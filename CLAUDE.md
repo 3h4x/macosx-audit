@@ -35,6 +35,8 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 |----------|------------|---------|
 | System Hardening | `system_hardening` | SIP, Gatekeeper, FileVault, macOS Firewall, software update auto-check |
 | System Hardening | `sharing_services` | Automatic login, guest account, Remote Login (SSH), Screen Sharing (VNC), File Sharing (SMB/AFP), AirPlay Receiver (AirBorne CVE surface), AirDrop mode |
+| System Hardening | `user_accounts` | Admin group membership count, hidden non-system accounts (UID 25-499 without `_` prefix), regular accounts with IsHidden=1 — detects backdoor accounts planted by malware (Coldroot RAT, OSX.Pirrit) |
+| System Hardening | `screensaver` | Screensaver password-on-wake requirement, grace period before password prompt, idle time before activation (falls back to display sleep on macOS 15+) |
 | System Hardening | `keychain_security` | Login keychain lock-on-sleep, idle auto-lock timeout, non-default keychains |
 | Persistence | `launch_agents` | LaunchAgents/Daemons with allowlist + Apple path validation |
 | Persistence | `cron_jobs` | Cron, at jobs, /etc/crontab |
@@ -48,6 +50,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Environment | `env_injection` | DYLD_INSERT_LIBRARIES, LD_PRELOAD, proxy hijack vars |
 | Extensions | `extensions` | Kernel extensions, system extensions |
 | Extensions | `auth_plugins` | Authorization plugins |
+| Extensions | `plugin_bundles` | Input Methods (keylogging risk), QuickLook plugins (.qlgenerator), Spotlight importers (.mdimporter), Internet Plug-Ins (legacy): signature check + recency flag |
 | SSH | `ssh_access` | authorized_keys entries |
 | SSH | `ssh_keys` | Private key passphrase protection, file permissions (600/400), deprecated DSA keys |
 | SSH | `ssh_config` | ProxyCommand (CVE-2025-61984), SendEnv/SetEnv, forwarding |

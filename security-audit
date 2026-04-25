@@ -38,8 +38,8 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
 # ─── Check registry ───
 
-CHECKS=(system_hardening sharing_services screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
-  env_injection extensions auth_plugins ssh_access ssh_keys process_integrity
+CHECKS=(system_hardening sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
+  env_injection extensions auth_plugins plugin_bundles ssh_access ssh_keys process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
   xprotect_status supply_chain shell_plugins trusted_certs ai_agent_hooks quarantine_events ssh_config git_hooks path_security
@@ -126,8 +126,8 @@ list_checks() {
   echo -e "${BOLD}Available checks:${NC}"
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
-  for name in system_hardening sharing_services screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles \
-    env_injection extensions auth_plugins ssh_access ssh_keys process_integrity \
+  for name in system_hardening sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles \
+    env_injection extensions auth_plugins plugin_bundles ssh_access ssh_keys process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
     [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
@@ -376,6 +376,56 @@ check_sharing_services() {
     ok "AirDrop limited to Contacts (or off by default)"
   else
     info "AirDrop discovery mode: $airdrop_mode"
+  fi
+}
+
+check_user_accounts() {
+  header "User Accounts"
+
+  local suspicious=0
+
+  # Admin group membership — every admin can escalate to root. Unexpected admins
+  # are a classic persistence technique (malware adds itself or a backdoor user).
+  local admin_line
+  admin_line=$(dscl . -read /Groups/admin GroupMembership 2>/dev/null | sed 's/GroupMembership: //' || true)
+  local admin_count
+  admin_count=$(echo "$admin_line" | wc -w | tr -d ' ')
+  if [[ "$admin_count" -gt 3 ]]; then
+    warn "Admin group has $admin_count members: $admin_line — verify each is expected"
+    suspicious=$((suspicious + 1))
+  elif [[ "$admin_count" -gt 0 ]]; then
+    info "Admin group ($admin_count member(s)): $admin_line"
+    ok "Admin member count is normal"
+  fi
+
+  # Hidden non-system accounts: UID 25-499 without the _ prefix are not Apple service
+  # accounts. macOS hides them from the login screen by default. Malware such as
+  # Coldroot RAT and OSX.Pirrit plants backdoor accounts in this UID range.
+  while IFS=$'\t' read -r username uid; do
+    [[ "$username" =~ ^_ ]] && continue
+    [[ "$username" == "root" || "$username" == "nobody" || "$username" == "daemon" ]] && continue
+    if [[ "$uid" -ge 25 && "$uid" -lt 500 ]]; then
+      warn "Hidden non-system account: $username (UID=$uid) — hidden from login screen, potential backdoor"
+      suspicious=$((suspicious + 1))
+    fi
+  done < <(dscl . -list /Users UniqueID 2>/dev/null | awk '{print $1"\t"$2}')
+
+  # Regular accounts (UID >= 500) with IsHidden=1 are unusual: attackers set this flag
+  # to conceal a planted account that would otherwise appear at the login screen.
+  while IFS= read -r username; do
+    local uid is_hidden
+    uid=$(dscl . -read "/Users/$username" UniqueID 2>/dev/null | awk '{print $2}' || true)
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    [[ "$uid" -lt 500 ]] && continue
+    is_hidden=$(dscl . -read "/Users/$username" IsHidden 2>/dev/null | awk '{print $2}' || true)
+    if [[ "$is_hidden" == "1" ]]; then
+      warn "Regular user account explicitly hidden from login screen: $username (UID=$uid, IsHidden=1)"
+      suspicious=$((suspicious + 1))
+    fi
+  done < <(dscl . -list /Users 2>/dev/null | grep -vE '^_|^root$|^nobody$|^daemon$')
+
+  if [[ "$suspicious" -eq 0 ]]; then
+    ok "No suspicious user accounts detected"
   fi
 }
 
@@ -713,6 +763,114 @@ check_auth_plugins() {
   else
     warn "Authorization plugins found:"
     echo "$auth_plugins" | while read -r line; do echo "      $line"; done
+  fi
+}
+
+check_plugin_bundles() {
+  header "Plugin Bundles (Input Methods / QuickLook / Spotlight)"
+
+  local total_warned=0
+  local now_epoch
+  now_epoch=$(date +%s)
+
+  # Input Methods receive raw keystrokes before any app sees them.
+  # A malicious input method is a silent system-level keylogger.
+  local imethod_dirs=("/Library/Input Methods" "$HOME/Library/Input Methods")
+  for dir in "${imethod_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r item; do
+      [[ -n "$item" && -e "$item" ]] || continue
+      local name sig authority
+      name=$(basename "$item")
+      sig=$(codesign -dv "$item" 2>&1 || true)
+      authority=$(echo "$sig" | grep "^Authority=" | head -1 | cut -d= -f2- || true)
+      if echo "$sig" | grep -q "not signed\|invalid signature"; then
+        fail "Input Method unsigned: $name ($dir) — potential keylogger"
+        total_warned=$((total_warned + 1))
+      elif ! echo "$authority" | grep -q "Software Signing\|Apple Code Signing"; then
+        local team
+        team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+        warn "Third-party Input Method: $name (Team: ${team:-unknown}) — has access to all keystrokes"
+        total_warned=$((total_warned + 1))
+      else
+        info "Apple Input Method: $name"
+      fi
+    done < <(find "$dir" -maxdepth 1 \( -name "*.app" -o -name "*.inputplugin" \) 2>/dev/null || true)
+  done
+
+  # QuickLook plugins execute whenever Finder or Quick Look previews a matching file.
+  # A malicious .qlgenerator runs code automatically on file hover/spacebar.
+  local ql_dirs=("/Library/QuickLook" "$HOME/Library/QuickLook")
+  for dir in "${ql_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r item; do
+      [[ -n "$item" && -e "$item" ]] || continue
+      local name sig team mod_epoch age_days
+      name=$(basename "$item")
+      sig=$(codesign -dv "$item" 2>&1 || true)
+      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if echo "$sig" | grep -q "not signed\|invalid signature"; then
+        fail "QuickLook plugin unsigned: $name ($dir)"
+        total_warned=$((total_warned + 1))
+      elif [[ "$age_days" -lt 30 ]]; then
+        warn "QuickLook plugin installed recently (${age_days}d ago): $name (Team: ${team:-unknown})"
+        total_warned=$((total_warned + 1))
+      else
+        info "QuickLook plugin: $name (Team: ${team:-unknown})"
+      fi
+    done < <(find "$dir" -maxdepth 1 -name "*.qlgenerator" 2>/dev/null || true)
+  done
+
+  # Spotlight importers run when Spotlight indexes a file of a matching type —
+  # triggered silently on download, mount, or Time Machine restore.
+  local spotlight_dirs=("/Library/Spotlight" "$HOME/Library/Spotlight")
+  for dir in "${spotlight_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r item; do
+      [[ -n "$item" && -e "$item" ]] || continue
+      local name sig team mod_epoch age_days
+      name=$(basename "$item")
+      sig=$(codesign -dv "$item" 2>&1 || true)
+      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
+      age_days=$(( (now_epoch - mod_epoch) / 86400 ))
+      if echo "$sig" | grep -q "not signed\|invalid signature"; then
+        fail "Spotlight importer unsigned: $name ($dir)"
+        total_warned=$((total_warned + 1))
+      elif [[ "$age_days" -lt 30 ]]; then
+        warn "Spotlight importer installed recently (${age_days}d ago): $name (Team: ${team:-unknown})"
+        total_warned=$((total_warned + 1))
+      else
+        info "Spotlight importer: $name (Team: ${team:-unknown})"
+      fi
+    done < <(find "$dir" -maxdepth 1 -name "*.mdimporter" 2>/dev/null || true)
+  done
+
+  # Internet Plug-Ins are a legacy API (pre-SIP); modern macOS rarely uses it.
+  # Leftover Java/Flash installs or malware that targets older systems may appear here.
+  local inet_dirs=("/Library/Internet Plug-Ins" "$HOME/Library/Internet Plug-Ins")
+  for dir in "${inet_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r item; do
+      [[ -n "$item" && -e "$item" ]] || continue
+      local name sig team
+      name=$(basename "$item")
+      sig=$(codesign -dv "$item" 2>&1 || true)
+      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      if echo "$sig" | grep -q "not signed\|invalid signature"; then
+        fail "Internet Plug-In unsigned: $name ($dir)"
+        total_warned=$((total_warned + 1))
+      else
+        warn "Internet Plug-In (legacy API): $name (Team: ${team:-unknown})"
+        total_warned=$((total_warned + 1))
+      fi
+    done < <(find "$dir" -maxdepth 1 -name "*.plugin" 2>/dev/null || true)
+  done
+
+  if [[ "$total_warned" -eq 0 ]]; then
+    ok "No suspicious plugin bundles found"
   fi
 }
 

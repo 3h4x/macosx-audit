@@ -63,7 +63,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Config Abuse | `dns_proxy` | DNS resolvers, system web/SOCKS proxy settings |
 | Processes | `process_integrity` | Code signature verification (uses full args, not truncated comm) |
 | Processes | `process_paths` | Binaries running from unusual paths |
-| Network | `network_listening` | Listening ports via lsof |
+| Network | `network_listening` | Listening ports via lsof; warns on non-system processes binding to all interfaces (external-facing) |
 | Network | `network_established` | Established connections (deduplicated, optional reverse DNS) |
 | Network | `suspicious_ports` | Flag known backdoor ports (4444, 5555, 1337, etc.) |
 | Network | `reverse_dns` | Reverse DNS on connections (off by default, adds latency) |

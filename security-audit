@@ -1018,13 +1018,56 @@ check_process_paths() {
 check_network_listening() {
   header "Network: Listening Ports"
 
+  local external_warn=0
+
   while IFS= read -r line; do
     local proc pid addr
     proc=$(echo "$line" | awk '{print $1}')
     pid=$(echo "$line" | awk '{print $2}')
     addr=$(echo "$line" | awk '{print $9}')
-    info "LISTEN $addr ($proc, PID $pid)"
+
+    local resolved proc_desc label
+    resolved=$(_resolve_process_name "$pid" "$proc")
+    proc_desc=$(_identify_process "$proc")
+    label=""
+    [[ -n "$proc_desc" ]] && label=" [${proc_desc}]"
+
+    # Determine if listener is reachable from outside this host.
+    # lsof addr field: "*:port" or "0.0.0.0:port" = all interfaces (external);
+    # "127.x:port" / "[::1]:port" = localhost only.
+    local bind_host="${addr%:*}"
+    local is_external=false
+    case "$bind_host" in
+      \*|0.0.0.0|\[::])            is_external=true ;;
+      127.*|::1|\[::1\]|localhost) is_external=false ;;
+      "")                          is_external=false ;;
+      *)                           is_external=true ;;
+    esac
+
+    if $is_external; then
+      # Known Apple/system daemons and positively identified processes are expected
+      local exe_path
+      exe_path=$(ps -p "$pid" -o args= 2>/dev/null | awk '{print $1}' || true)
+      local is_known=false
+      case "${exe_path:-}" in
+        /System/*|/usr/sbin/*|/usr/bin/*|/usr/libexec/*) is_known=true ;;
+      esac
+      [[ -n "$proc_desc" ]] && is_known=true
+
+      if $is_known; then
+        info "LISTEN $addr — ${resolved}${label} (PID ${pid})"
+      else
+        warn "External-facing listener: $addr — ${resolved} (PID ${pid})"
+        external_warn=$((external_warn + 1))
+      fi
+    else
+      info "LISTEN $addr — ${resolved}${label} (PID ${pid})"
+    fi
   done < <(lsof -i -nP 2>/dev/null | grep LISTEN)
+
+  if [[ "$external_warn" -eq 0 ]]; then
+    ok "No unexpected external-facing listeners"
+  fi
 }
 
 _identify_ip() {
@@ -1066,18 +1109,26 @@ _identify_ip() {
 _identify_process() {
   local proc="$1"
   case "$proc" in
-    rapportd)   echo "AirDrop/Handoff discovery" ;;
-    identitys*) echo "Apple identity services" ;;
-    sharingd)   echo "AirDrop/sharing daemon" ;;
-    apsd)       echo "Apple Push Notification" ;;
-    cloudd)     echo "iCloud sync" ;;
-    nsurlsess*) echo "Apple URL session" ;;
+    rapportd)    echo "AirDrop/Handoff discovery" ;;
+    identitys*)  echo "Apple identity services" ;;
+    sharingd)    echo "AirDrop/sharing daemon" ;;
+    apsd)        echo "Apple Push Notification" ;;
+    cloudd)      echo "iCloud sync" ;;
+    nsurlsess*)  echo "Apple URL session" ;;
     AMPDeviceD*) echo "Apple Media" ;;
-    symptomsd)  echo "Apple network diagnostics" ;;
+    symptomsd)   echo "Apple network diagnostics" ;;
     mDNSRespon*) echo "Bonjour/mDNS" ;;
-    CommCenter) echo "cellular/SIM services" ;;
-    parsecd)    echo "Siri suggestions" ;;
-    *)          echo "" ;;
+    CommCenter)  echo "cellular/SIM services" ;;
+    parsecd)     echo "Siri suggestions" ;;
+    imagent)     echo "iMessage daemon" ;;
+    netbiosd)    echo "NetBIOS name service" ;;
+    configd)     echo "System Configuration daemon" ;;
+    sshd*)       echo "SSH daemon" ;;
+    cupsd)       echo "CUPS print daemon" ;;
+    ControlCe*)  echo "macOS Control Center" ;;
+    UserNotifi*) echo "Notification Center" ;;
+    loginwindow) echo "Login Window" ;;
+    *)           echo "" ;;
   esac
 }
 

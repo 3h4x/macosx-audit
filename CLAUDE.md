@@ -34,7 +34,8 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Category | Check Name | Details |
 |----------|------------|---------|
 | System Hardening | `system_hardening` | SIP, Gatekeeper, FileVault, macOS Firewall, software update auto-check |
-| System Hardening | `firewall_rules` | Firewall stealth mode, block-all setting, per-app exceptions — flags interpreter (python/ruby/node/bash) exceptions and non-system binaries with incoming connections allowed |
+| System Hardening | `firewall_rules` | Firewall stealth mode (with remediation advice), block-all setting, per-app exceptions — flags interpreter (python/ruby/node/bash) exceptions and non-system binaries with incoming connections allowed |
+| System Hardening | `firmware_security` | Apple Silicon: Secure Boot policy via `bputil -d` (Full/Reduced/Permissive); Intel: firmware password via `firmwarepasswd -check` (requires root on macOS 12+) — physical-access hardening |
 | System Hardening | `sharing_services` | Automatic login, guest account, Remote Login (SSH), Screen Sharing (VNC), File Sharing (SMB/AFP), AirPlay Receiver (AirBorne CVE surface), AirDrop mode |
 | System Hardening | `user_accounts` | Admin group membership count, hidden non-system accounts (UID 25-499 without `_` prefix), regular accounts with IsHidden=1 — detects backdoor accounts planted by malware (Coldroot RAT, OSX.Pirrit) |
 | System Hardening | `screensaver` | Screensaver password-on-wake requirement, grace period before password prompt, idle time before activation (falls back to display sleep on macOS 15+) |

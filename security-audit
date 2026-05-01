@@ -38,7 +38,7 @@ info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
 # ─── Check registry ───
 
-CHECKS=(system_hardening firewall_rules sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
+CHECKS=(system_hardening firewall_rules firmware_security sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
   env_injection extensions auth_plugins plugin_bundles ssh_access ssh_keys process_integrity
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
@@ -126,7 +126,7 @@ list_checks() {
   echo -e "${BOLD}Available checks:${NC}"
   echo ""
   echo -e "  ${CYAN}Core checks (no special permissions):${NC}"
-  for name in system_hardening firewall_rules sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles \
+  for name in system_hardening firewall_rules firmware_security sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles \
     env_injection extensions auth_plugins plugin_bundles ssh_access ssh_keys process_integrity \
     process_paths network_listening network_established docker; do
     local status="on"
@@ -299,6 +299,8 @@ check_firewall_rules() {
   stealth=$("$sfw" --getstealthmode 2>/dev/null || true)
   if echo "$stealth" | grep -q "off\|disabled\|inactive"; then
     warn "Firewall stealth mode is OFF — Mac responds to ping/port probes on the network"
+    info "  Remediate: System Settings > Network > Firewall > Options > Enable stealth mode"
+    info "  Or: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on"
   elif echo "$stealth" | grep -q "on\|enabled\|active"; then
     ok "Firewall stealth mode enabled"
   else
@@ -362,6 +364,67 @@ check_firewall_rules() {
 
   if [[ "$suspicious" -eq 0 ]]; then
     ok "No suspicious firewall application exceptions"
+  fi
+}
+
+check_firmware_security() {
+  header "Firmware Security"
+
+  # Determine CPU architecture to select the right check.
+  local cpu_brand
+  cpu_brand=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
+
+  if echo "$cpu_brand" | grep -q "Apple"; then
+    # Apple Silicon: bputil reads LocalPolicy to report Secure Boot level.
+    # Full Security  = signed, versioned OS required (cryptographic chain to Apple)
+    # Reduced        = local policy downgraded (e.g. for unsigned kexts or 1TR changes)
+    # Permissive     = essentially no boot security — easy persistence / rootkit install
+    if ! command -v bputil &>/dev/null; then
+      info "bputil not available — cannot check Secure Boot policy"
+      return
+    fi
+    local bputil_out
+    bputil_out=$(bputil -d 2>/dev/null || true)
+    if [[ -z "$bputil_out" ]]; then
+      info "bputil returned no output (may need recovery OS context)"
+      return
+    fi
+
+    if echo "$bputil_out" | grep -qi "full security"; then
+      ok "Secure Boot: Full Security (Apple Silicon)"
+    elif echo "$bputil_out" | grep -qi "reduced security"; then
+      warn "Secure Boot: Reduced Security — unsigned kexts or custom boot policies may be active"
+      info "  Remediate: Boot to Recovery OS (hold power), use Startup Security Utility to restore Full Security"
+    elif echo "$bputil_out" | grep -qi "permissive security"; then
+      fail "Secure Boot: Permissive Security — boot integrity not enforced, rootkits can persist across reboots"
+      info "  Remediate: Boot to Recovery OS (hold power), use Startup Security Utility to restore Full Security"
+    else
+      info "Secure Boot policy: $(echo "$bputil_out" | grep -i "security" | head -3)"
+    fi
+
+    # SIP is tied to boot policy on Apple Silicon; cross-check here for completeness.
+    if echo "$bputil_out" | grep -qi "SIP.*disabled\|System Integrity Protection.*disabled"; then
+      warn "bputil reports SIP disabled in LocalPolicy"
+    fi
+
+  else
+    # Intel Mac: firmware password prevents booting from external media or
+    # single-user mode without the password — a meaningful physical-access control.
+    # firmwarepasswd requires root on macOS 12+; skip gracefully without it.
+    if ! command -v firmwarepasswd &>/dev/null; then
+      info "firmwarepasswd not found — skipping Intel firmware password check"
+      return
+    fi
+    local fw_check
+    fw_check=$(firmwarepasswd -check 2>/dev/null || echo "requires root")
+    if echo "$fw_check" | grep -qi "requires root\|requires administrator"; then
+      info "Firmware password check requires root — run with --root to enable"
+    elif echo "$fw_check" | grep -qi "Yes\|Password Enabled: Yes"; then
+      ok "Firmware password enabled (Intel Mac)"
+    else
+      warn "Firmware password NOT set — attacker with physical access can boot from USB or enter single-user mode"
+      info "  Remediate: Boot to Recovery OS (Cmd+R), use Utilities > Startup Security Utility > Set Password"
+    fi
   fi
 }
 

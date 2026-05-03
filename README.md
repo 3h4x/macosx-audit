@@ -58,10 +58,13 @@ Or specify with `--config=PATH`. Without a config file, all non-root checks run 
 
 **Supply Chain (new):**
 - **VS Code extensions** — count + flag recently installed (<7 days)
+- **Cursor extensions** — count + flag recently installed (<7 days)
 - **npm globals** — list global packages
 - **Homebrew taps** — flag non-default taps
 - **MCP servers** — parse Claude Desktop and Cursor MCP configs
 - **pip user packages** — count user-installed packages
+- **pipx apps** — list isolated Python CLI tools
+- **Ruby user gems** — list gems installed outside the system set
 
 **Configuration Abuse (new):**
 - **SSH Config** — ProxyCommand (CVE-2025-61984), SendEnv/SetEnv, forwarding rules

@@ -1643,6 +1643,51 @@ check_supply_chain() {
     fi
   fi
 
+  # pipx user-installed apps (isolated Python CLIs)
+  if command -v pipx &>/dev/null; then
+    local pipx_apps
+    pipx_apps=$(pipx list --short 2>/dev/null || true)
+    if [[ -z "$pipx_apps" ]]; then
+      pipx_apps=$(pipx list 2>/dev/null | sed -n 's/^package \(.*\) has executable.*/\1/p' || true)
+    fi
+    if [[ -n "$pipx_apps" ]]; then
+      local pipx_count
+      pipx_count=$(echo "$pipx_apps" | grep -c . || true)
+      info "pipx apps: $pipx_count"
+      echo "$pipx_apps" | while read -r app; do
+        [[ -n "$app" ]] && echo "      $app"
+      done
+    fi
+  fi
+
+  # Ruby gems installed to the user gem home
+  if command -v ruby &>/dev/null; then
+    local ruby_user_gems
+    ruby_user_gems=$(ruby -e '
+      require "rubygems"
+      spec_dir = File.join(Gem.user_dir, "specifications")
+      if Dir.exist?(spec_dir)
+        Dir.children(spec_dir)
+          .grep(/\.gemspec\z/)
+          .map { |file|
+            spec = Gem::Specification.load(File.join(spec_dir, file))
+            spec ? spec.name : File.basename(file, ".gemspec")
+          }
+          .uniq
+          .sort
+          .each { |name| puts name }
+      end
+    ' 2>/dev/null || true)
+    if [[ -n "$ruby_user_gems" ]]; then
+      local gem_count
+      gem_count=$(echo "$ruby_user_gems" | grep -c . || true)
+      info "Ruby user gems: $gem_count"
+      echo "$ruby_user_gems" | while read -r gem_name; do
+        [[ -n "$gem_name" ]] && echo "      $gem_name"
+      done
+    fi
+  fi
+
   # Rust/cargo installed binaries
   local cargo_bin="$HOME/.cargo/bin"
   _check_recent_installs "cargo binary" "cargo binaries" "Cargo binaries (~/.cargo/bin)" \

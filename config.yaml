@@ -51,7 +51,7 @@ system_integrity: true        # Code signatures on critical system binaries
 launchctl_state: true         # Running launchd services vs plist files
 dylib_injection: true         # DYLD hijacking beyond env vars
 dns_tunneling: true           # DNS-based C2 indicators
-recently_modified: true       # Recently modified system files (last 7 days)
+recently_modified: true       # Recent admin-writable executables/libs; summarizes Apple-managed file churn
 process_spoofing: true        # Process name vs binary path mismatch
 promiscuous_interfaces: true  # Network interfaces in promiscuous mode
 deleted_running: true         # Processes running from deleted files

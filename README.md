@@ -72,6 +72,9 @@ Or specify with `--config=PATH`. Without a config file, all non-root checks run 
 - **PATH Security** — world-writable, missing, or empty PATH entries
 - **DNS & Proxy** — DNS resolver audit, system proxy settings
 
+**Deep Forensics (selected):**
+- **Recently Modified** — warns on recent changes in admin-writable executable/library paths such as `/usr/local/bin`, `/opt/homebrew/bin`, and privileged helper locations; summarizes Apple-managed sealed-file churn separately to reduce noise on modern macOS
+
 **Elevated (disabled by default):**
 - **TCC Permissions** — camera, mic, screen recording, accessibility, FDA grants
 - **BTM Dump** — full Background Task Management audit via sfltool

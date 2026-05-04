@@ -2712,35 +2712,51 @@ check_recently_modified() {
   header "Recently Modified System Files"
 
   local found=0
+  local dir f basename_f
+  local -a writable_exec_dirs=(
+    /usr/local/bin
+    /usr/local/sbin
+    /usr/local/libexec
+    /opt/homebrew/bin
+    /opt/homebrew/sbin
+    /opt/homebrew/libexec
+    /Library/PrivilegedHelperTools
+    /Library/ScriptingAdditions
+  )
 
-  # System binaries modified in last 7 days
-  for dir in /usr/bin /usr/sbin /usr/lib; do
+  # Focus on admin-writable execution paths where persistence and toolchain abuse
+  # are more likely than in sealed Apple-managed locations.
+  for dir in "${writable_exec_dirs[@]}"; do
     [[ -d "$dir" ]] || continue
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
-      warn "Recently modified (<7 days): $f"
+      warn "Recently modified admin-writable executable/library (<7 days): $f"
       found=$((found + 1))
-    done < <(find "$dir" -type f -mtime -7 2>/dev/null)
+    done < <(find "$dir" -type f -mtime -7 \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) 2>/dev/null | head -20)
   done
 
-  # /System modifications (should never happen with SIP, except asset updates)
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    # Apple auto-updates AssetsV2 (Siri models, translations) — not suspicious
-    [[ "$f" == */AssetsV2/* ]] && continue
-    fail "Recently modified in /System (<7 days): $f"
-    found=$((found + 1))
-  done < <(find /System -type f -mtime -7 2>/dev/null | head -10)
+  info "Apple-managed sealed paths (/System, /usr/bin, /usr/sbin, /usr/lib) are not enumerated here to avoid noise from routine macOS updates"
 
-  # New plist files in /Library/Preferences
+  # Keep third-party preference churn visible, but avoid treating routine Apple
+  # preference writes as findings.
+  local recent_nonapple_prefs=0 recent_apple_prefs=0
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    info "Recent plist in /Library/Preferences: $(basename "$f")"
-    found=$((found + 1))
-  done < <(find /Library/Preferences -name "*.plist" -type f -mtime -7 2>/dev/null | head -10)
+    basename_f=$(basename "$f")
+    if [[ "$basename_f" == com.apple.* || "$basename_f" == NetworkInterfaces.plist || "$basename_f" == preferences.plist ]]; then
+      recent_apple_prefs=$((recent_apple_prefs + 1))
+      continue
+    fi
+    info "Recent non-Apple plist in /Library/Preferences: $basename_f"
+    recent_nonapple_prefs=$((recent_nonapple_prefs + 1))
+  done < <(find /Library/Preferences -name "*.plist" -type f -mtime -7 2>/dev/null | head -20)
+
+  if [[ "$recent_apple_prefs" -gt 0 ]]; then
+    info "Recent Apple preference plists in /Library/Preferences: ${recent_apple_prefs}"
+  fi
 
   if [[ "$found" -eq 0 ]]; then
-    ok "No recently modified system files"
+    ok "No suspicious recently modified admin-writable system files"
   fi
 }
 

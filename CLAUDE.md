@@ -63,6 +63,7 @@ Root-requiring checks (`tcc_permissions`, `btm_dump`) default to off — enable 
 | Config Abuse | `git_hooks` | Global hooks path + workspace repo hooks |
 | Config Abuse | `path_security` | World-writable, missing, or empty PATH entries |
 | Config Abuse | `dns_proxy` | DNS resolvers, system web/SOCKS proxy settings |
+| Config Abuse | `time_sync` | NTP daemon status (`timed`), time offset from Apple's server (warn >5s, fail >60s), unexpected NTP config overrides in `/etc/ntp_opendirectory.conf` — large offsets enable TOTP/cert-expiry bypass |
 | Processes | `process_integrity` | Code signature verification (uses full args, not truncated comm) |
 | Processes | `process_paths` | Binaries running from unusual paths |
 | Network | `network_listening` | Listening ports via lsof; warns on non-system processes binding to all interfaces (external-facing) |

@@ -71,6 +71,7 @@ Or specify with `--config=PATH`. Without a config file, all non-root checks run 
 - **Git Hooks** — global hooks path + workspace repo hooks
 - **PATH Security** — world-writable, missing, or empty PATH entries
 - **DNS & Proxy** — DNS resolver audit, system proxy settings
+- **Time Sync** — NTP daemon status, time offset from Apple's server (warns if >5s, fails if >60s), unexpected NTP config overrides
 
 **Deep Forensics (selected):**
 - **Recently Modified** — warns on recent changes in admin-writable executable/library paths such as `/usr/local/bin`, `/opt/homebrew/bin`, and privileged helper locations; summarizes Apple-managed sealed-file churn separately to reduce noise on modern macOS

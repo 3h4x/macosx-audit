@@ -36,6 +36,7 @@ ssh_config: true              # ~/.ssh/config ProxyCommand, forwarding (CVE-2025
 git_hooks: true               # Global and workspace git hooks
 path_security: true           # World-writable or missing PATH directories
 dns_proxy: true               # DNS resolver and system proxy settings
+time_sync: true               # NTP status, time offset from Apple, unexpected NTP overrides
 
 # --- Network ---
 suspicious_ports: true        # Flag known backdoor ports (4444, 5555, 1337, etc.)

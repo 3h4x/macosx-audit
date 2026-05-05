@@ -43,7 +43,7 @@ CHECKS=(system_hardening firewall_rules firmware_security sharing_services user_
   process_paths network_listening network_established docker
   periodic_scripts folder_actions privileged_helpers login_items
   xprotect_status supply_chain shell_plugins trusted_certs ai_agent_hooks quarantine_events ssh_config git_hooks path_security
-  dns_proxy suspicious_ports reverse_dns
+  dns_proxy time_sync suspicious_ports reverse_dns
   temp_executables sudoers browser_extensions hidden_files reverse_shells
   system_integrity launchctl_state dylib_injection dns_tunneling
   recently_modified process_spoofing promiscuous_interfaces deleted_running
@@ -149,7 +149,7 @@ list_checks() {
   done
   echo ""
   echo -e "  ${CYAN}Configuration abuse:${NC}"
-  for name in ssh_config git_hooks path_security dns_proxy; do
+  for name in ssh_config git_hooks path_security dns_proxy time_sync; do
     local status="on"
     [[ "${CONFIG[$name]:-true}" == "false" ]] && status="off"
     echo -e "    ${name}  ${DIM}[${status}]${NC}"
@@ -2168,6 +2168,62 @@ check_dns_proxy() {
 
   if ! $proxy_found; then
     ok "No system proxies enabled"
+  fi
+}
+
+check_time_sync() {
+  header "Time Synchronization"
+
+  # Check if timed (Apple's NTP daemon) is running
+  local timed_pid
+  timed_pid=$(pgrep -x timed 2>/dev/null || true)
+  if [[ -z "$timed_pid" ]]; then
+    fail "timed not running — NTP synchronization disabled (time-based auth bypass risk)"
+  else
+    info "timed running (PID $timed_pid)"
+  fi
+
+  # Check /etc/ntp_opendirectory.conf for unexpected server overrides
+  if [[ -f /etc/ntp_opendirectory.conf ]]; then
+    local custom_servers
+    custom_servers=$(grep -v '^\s*#' /etc/ntp_opendirectory.conf | grep -v '^\s*$' | grep -v 'opendirectory peers' || true)
+    if [[ -n "$custom_servers" ]]; then
+      warn "Non-default entries in /etc/ntp_opendirectory.conf:"
+      echo "$custom_servers" | while read -r line; do
+        echo "      $line"
+      done
+    fi
+  fi
+
+  # Check for unexpected NTP-related LaunchDaemons in user-writable locations
+  local user_ntp_agents=0
+  for dir in "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r -d '' plist; do
+      if grep -qi "ntp\|sntpd\|timed" "$plist" 2>/dev/null; then
+        warn "NTP-related launch entry: $plist"
+        user_ntp_agents=$((user_ntp_agents + 1))
+      fi
+    done < <(find "$dir" -name "*.plist" -print0 2>/dev/null)
+  done
+
+  # Measure time offset against Apple's NTP server (5s timeout)
+  local sntp_out offset_raw offset_abs
+  sntp_out=$(timeout 5 sntp time.apple.com 2>/dev/null || true)
+  if [[ -z "$sntp_out" ]]; then
+    warn "Could not reach time.apple.com to measure offset"
+  else
+    offset_raw=$(echo "$sntp_out" | awk '{print $1}')
+    # Strip leading +/- for absolute value comparison using awk
+    offset_abs=$(echo "$offset_raw" | awk '{v=$1+0; print (v<0)?-v:v}')
+    # Thresholds: >60s = critical (TOTP bypass, cert replay); >5s = warning (unusual drift)
+    if awk "BEGIN {exit !($offset_abs > 60)}"; then
+      fail "Time offset from Apple NTP: ${offset_raw}s — exceeds 60s threshold (TOTP/cert bypass risk)"
+    elif awk "BEGIN {exit !($offset_abs > 5)}"; then
+      warn "Time offset from Apple NTP: ${offset_raw}s — unusual drift (expected < 5s)"
+    else
+      ok "Time offset from Apple NTP: ${offset_raw}s"
+    fi
   fi
 }
 

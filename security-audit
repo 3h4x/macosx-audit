@@ -1570,6 +1570,48 @@ _check_recent_installs() {
   if [[ "$recent" -eq 0 ]]; then ok "No recently installed ${plural}"; fi
 }
 
+_list_cargo_packages() {
+  if command -v cargo &>/dev/null; then
+    cargo install --list 2>/dev/null | awk '
+      /^[^[:space:]].* v[0-9][^:]*:$/ {
+        print $1
+      }
+    ' || true
+    return 0
+  fi
+
+  local crates_toml="$HOME/.cargo/.crates.toml"
+  if [[ -f "$crates_toml" ]]; then
+    awk -F'"' '
+      /^".* \([^"]+\)" = \[/ {
+        split($2, parts, " ")
+        print parts[1]
+      }
+    ' "$crates_toml" 2>/dev/null || true
+  fi
+}
+
+_list_cargo_non_registry_packages() {
+  local crates_toml="$HOME/.cargo/.crates.toml"
+  [[ -f "$crates_toml" ]] || return 0
+
+  awk -F'"' '
+    /^".* \((git|path)\+/ {
+      key=$2
+      split(key, parts, " ")
+      source=key
+      if (key ~ /\(git\+/) {
+        source="git"
+      } else if (key ~ /\(path\+/) {
+        source="path"
+      } else {
+        source="custom"
+      }
+      print parts[1] "|" source
+    }
+  ' "$crates_toml" 2>/dev/null || true
+}
+
 check_supply_chain() {
   header "Supply Chain"
 
@@ -1689,6 +1731,26 @@ check_supply_chain() {
   fi
 
   # Rust/cargo installed binaries
+  local cargo_packages
+  cargo_packages=$(_list_cargo_packages)
+  if [[ -n "$cargo_packages" ]]; then
+    local cargo_pkg_count
+    cargo_pkg_count=$(echo "$cargo_packages" | grep -c . || true)
+    info "Cargo packages: $cargo_pkg_count"
+    echo "$cargo_packages" | while read -r package_name; do
+      [[ -n "$package_name" ]] && echo "      $package_name"
+    done
+  fi
+
+  local cargo_custom
+  cargo_custom=$(_list_cargo_non_registry_packages)
+  if [[ -n "$cargo_custom" ]]; then
+    while IFS='|' read -r package_name source_type; do
+      [[ -n "$package_name" ]] || continue
+      warn "Cargo package from ${source_type} source: $package_name"
+    done <<< "$cargo_custom"
+  fi
+
   local cargo_bin="$HOME/.cargo/bin"
   _check_recent_installs "cargo binary" "cargo binaries" "Cargo binaries (~/.cargo/bin)" \
     "$cargo_bin" -type f -perm -111

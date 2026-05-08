@@ -28,7 +28,7 @@ xprotect_status: true         # XProtect version and last update
 login_items: true             # Login items (limited without root)
 
 # --- Supply chain ---
-supply_chain: true            # VS Code/Cursor extensions, npm globals, brew taps, MCP servers, pip/pipx, Ruby gems
+supply_chain: true            # VS Code/Cursor extensions, npm globals, brew taps, MCP servers, pip/pipx, Ruby gems, Cargo packages
 shell_plugins: true           # oh-my-zsh custom plugins, zinit, zplug, antigen bundles
 
 # --- Configuration abuse ---

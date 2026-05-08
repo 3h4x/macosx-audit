@@ -65,6 +65,7 @@ Or specify with `--config=PATH`. Without a config file, all non-root checks run 
 - **pip user packages** — count user-installed packages
 - **pipx apps** — list isolated Python CLI tools
 - **Ruby user gems** — list gems installed outside the system set
+- **Cargo packages** — inventory installed Rust CLI crates and flag git/path sources when metadata is available
 
 **Configuration Abuse (new):**
 - **SSH Config** — ProxyCommand (CVE-2025-61984), SendEnv/SetEnv, forwarding rules

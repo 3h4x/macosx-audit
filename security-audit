@@ -254,24 +254,32 @@ check_system_hardening() {
     ok "System Integrity Protection (SIP) enabled"
   else
     fail "SIP is DISABLED — malware can modify system files"
+    info "  Remediate: boot into macOS Recovery (hold power on Apple Silicon, Cmd+R on Intel)"
+    info "  Then run: csrutil enable  (restart required)"
   fi
 
   if spctl --status 2>&1 | grep -q "enabled"; then
     ok "Gatekeeper enabled"
   else
     warn "Gatekeeper disabled — unsigned apps can run freely"
+    info "  Remediate: sudo spctl --master-enable"
+    info "  Or: System Settings > Privacy & Security > set 'Allow apps from' to App Store or App Store and identified developers"
   fi
 
   if fdesetup status 2>&1 | grep -q "On"; then
     ok "FileVault disk encryption enabled"
   else
     warn "FileVault OFF — disk is not encrypted"
+    info "  Remediate: System Settings > Privacy & Security > FileVault > Turn On"
+    info "  (Encryption runs in the background; save the recovery key in a safe place)"
   fi
 
   if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q "enabled\|blocking"; then
     ok "macOS Firewall enabled"
   else
     warn "macOS Firewall disabled"
+    info "  Remediate: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"
+    info "  Or: System Settings > Network > Firewall > turn on"
   fi
 
   # Software update checks — auto-check and critical security patch install
@@ -280,8 +288,12 @@ check_system_hardening() {
   critical_install=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall 2>/dev/null || echo "0")
   if [[ "$auto_check" != "1" ]]; then
     warn "Automatic update checks disabled — security patches may be missed"
+    info "  Remediate: sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true"
+    info "  Or: System Settings > General > Software Update > enable 'Check for updates'"
   elif [[ "$critical_install" != "1" ]]; then
     warn "Critical security updates auto-install disabled — patches require manual action"
+    info "  Remediate: sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true"
+    info "  Or: System Settings > General > Software Update > enable 'Install Security Responses and system files'"
   else
     ok "Automatic security updates enabled"
   fi
@@ -436,6 +448,8 @@ check_sharing_services() {
   auto_login=$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || true)
   if [[ -n "$auto_login" ]]; then
     fail "Automatic login enabled for: $auto_login — system boots without password"
+    info "  Remediate: System Settings > Users & Groups > disable 'Automatically log in as'"
+    info "  Or: sudo defaults delete /Library/Preferences/com.apple.loginwindow autoLoginUser"
   else
     ok "Automatic login disabled"
   fi
@@ -445,6 +459,8 @@ check_sharing_services() {
   guest_enabled=$(defaults read /Library/Preferences/com.apple.loginwindow GuestEnabled 2>/dev/null || echo "0")
   if [[ "$guest_enabled" == "1" ]]; then
     warn "Guest account is enabled — anonymous local access possible"
+    info "  Remediate: System Settings > Users & Groups > Guest User > disable 'Allow guests to log in'"
+    info "  Or: sudo defaults write /Library/Preferences/com.apple.loginwindow GuestEnabled -bool false"
   else
     ok "Guest account disabled"
   fi
@@ -454,6 +470,8 @@ check_sharing_services() {
   ssh_status=$(systemsetup -getremotelogin 2>/dev/null || true)
   if echo "$ssh_status" | grep -qi "remote login: on"; then
     warn "Remote Login (SSH server) is ON — ensure only authorized keys are accepted"
+    info "  Remediate: sudo systemsetup -setremotelogin off  (if SSH not needed)"
+    info "  Or restrict access: System Settings > General > Sharing > Remote Login > allow specific users only"
   elif echo "$ssh_status" | grep -qi "remote login: off"; then
     ok "Remote Login (SSH server) disabled"
   else
@@ -468,6 +486,8 @@ check_sharing_services() {
   # Screen Sharing / Remote Management (VNC on port 5900)
   if lsof -i TCP:5900 -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
     fail "Screen Sharing / VNC listening on port 5900 — remote visual access possible"
+    info "  Remediate: System Settings > General > Sharing > disable Screen Sharing"
+    info "  Or: sudo launchctl unload -w /System/Library/LaunchDaemons/com.apple.screensharing.plist"
   else
     ok "Screen Sharing disabled"
   fi
@@ -481,6 +501,7 @@ check_sharing_services() {
   if lsof -i TCP:445 -sTCP:LISTEN -nP 2>/dev/null | grep -q . || \
      lsof -i TCP:548 -sTCP:LISTEN -nP 2>/dev/null | grep -q .; then
     warn "File Sharing is enabled (SMB/AFP listener detected)"
+    info "  Remediate: System Settings > General > Sharing > disable File Sharing"
   else
     ok "File Sharing disabled"
   fi
@@ -498,6 +519,7 @@ check_sharing_services() {
   if [[ -n "$airplay_addr" ]]; then
     if [[ "$airplay_addr" == "*:"* ]]; then
       warn "AirPlay Receiver listening on all interfaces ($airplay_addr) — LAN-adjacent RCE surface (AirBorne CVEs)"
+      info "  Remediate: System Settings > General > AirDrop & Handoff > disable AirPlay Receiver"
     else
       info "AirPlay Receiver listening on $airplay_addr"
     fi
@@ -511,6 +533,7 @@ check_sharing_services() {
   airdrop_mode=$(defaults read com.apple.sharingd DiscoverableMode 2>/dev/null || true)
   if [[ "$airdrop_mode" == "Everyone" ]]; then
     warn "AirDrop set to Everyone — any nearby Apple device can attempt to send files"
+    info "  Remediate: System Settings > General > AirDrop & Handoff > set AirDrop to 'Contacts Only' or 'No One'"
   elif [[ "$airdrop_mode" == "Off" ]]; then
     ok "AirDrop is off"
   elif [[ -z "$airdrop_mode" || "$airdrop_mode" == "Contacts Only" ]]; then
@@ -533,6 +556,7 @@ check_user_accounts() {
   admin_count=$(echo "$admin_line" | wc -w | tr -d ' ')
   if [[ "$admin_count" -gt 3 ]]; then
     warn "Admin group has $admin_count members: $admin_line — verify each is expected"
+    info "  Remediate: sudo dseditgroup -o edit -d <username> -t user admin  (to remove an admin)"
     suspicious=$((suspicious + 1))
   elif [[ "$admin_count" -gt 0 ]]; then
     info "Admin group ($admin_count member(s)): $admin_line"
@@ -547,6 +571,8 @@ check_user_accounts() {
     [[ "$username" == "root" || "$username" == "nobody" || "$username" == "daemon" ]] && continue
     if [[ "$uid" -ge 25 && "$uid" -lt 500 ]]; then
       warn "Hidden non-system account: $username (UID=$uid) — hidden from login screen, potential backdoor"
+      info "  Investigate: dscl . -read /Users/$username  |  verify with: last $username"
+      info "  If malicious: sudo dscl . -delete /Users/$username"
       suspicious=$((suspicious + 1))
     fi
   done < <(dscl . -list /Users UniqueID 2>/dev/null | awk '{print $1"\t"$2}')
@@ -561,6 +587,8 @@ check_user_accounts() {
     is_hidden=$(dscl . -read "/Users/$username" IsHidden 2>/dev/null | awk '{print $2}' || true)
     if [[ "$is_hidden" == "1" ]]; then
       warn "Regular user account explicitly hidden from login screen: $username (UID=$uid, IsHidden=1)"
+      info "  Investigate: dscl . -read /Users/$username  |  check login history: last $username"
+      info "  To unhide: sudo dscl . -delete /Users/$username IsHidden"
       suspicious=$((suspicious + 1))
     fi
   done < <(dscl . -list /Users 2>/dev/null | grep -vE '^_|^root$|^nobody$|^daemon$')
@@ -593,9 +621,13 @@ check_screensaver() {
       ok "Password required immediately (no grace period)"
     else
       warn "Screensaver password delay: ${pw_delay}s — system can be unlocked without password within this window"
+      info "  Remediate: System Settings > Lock Screen > set 'Require password after screen saver begins' to 'Immediately'"
+      info "  Or: defaults write com.apple.screensaver askForPasswordDelay -int 0"
     fi
   else
     fail "Screensaver does NOT require password — physical access bypasses screen lock"
+    info "  Remediate: System Settings > Lock Screen > enable 'Require password after screen saver begins'"
+    info "  Or: defaults write com.apple.screensaver askForPassword -int 1"
   fi
 
   # Check idle time before screensaver activates (per-host setting takes precedence)
@@ -613,19 +645,26 @@ check_screensaver() {
     if [[ -n "$display_sleep" && "$display_sleep" -gt 0 ]]; then
       if [[ "$display_sleep" -gt 5 ]]; then
         warn "Display sleep (lock trigger) set to ${display_sleep} minute(s) — consider reducing to ≤5 minutes"
+        info "  Remediate: System Settings > Lock Screen > set 'Turn display off on battery when inactive' to 5 minutes or less"
+        info "  Or: sudo pmset -a displaysleep 5"
       else
         ok "Screen locks after ${display_sleep} minute(s) of inactivity (display sleep)"
       fi
     else
       warn "Screensaver auto-start is disabled — screen never locks automatically"
+      info "  Remediate: System Settings > Lock Screen > set a display sleep timeout"
     fi
   elif [[ "$idle_time" -eq 0 ]]; then
     warn "Screensaver auto-start is disabled — screen never locks automatically"
+    info "  Remediate: System Settings > Lock Screen > set 'Start Screen Saver when inactive' to 5 minutes or less"
+    info "  Or: defaults -currentHost write com.apple.screensaver idleTime -int 300"
   else
     local idle_min
     idle_min=$(( idle_time / 60 ))
     if [[ "$idle_time" -gt 300 ]]; then
       warn "Screensaver activates after ${idle_min} minute(s) — consider reducing to ≤5 minutes"
+      info "  Remediate: System Settings > Lock Screen > set 'Start Screen Saver when inactive' to 5 minutes or less"
+      info "  Or: defaults -currentHost write com.apple.screensaver idleTime -int 300"
     else
       ok "Screensaver activates after ${idle_min} minute(s)"
     fi

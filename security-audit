@@ -773,6 +773,8 @@ check_launch_agents() {
           done
           if ! $valid_path; then
             warn "${label}: ${name} claims Apple but runs from non-system path: ${program}"
+            info "  Remediate: inspect the plist and binary, then remove or disable it with launchctl bootout if it is not Apple-owned"
+            info "  Or: reinstall the affected Apple software/component if a legitimate plist now points outside system paths"
             echo -e "      ${DIM}File: ${plist}${NC}"
             echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
           else
@@ -783,6 +785,8 @@ check_launch_agents() {
         fi
       else
         warn "${label} UNKNOWN: ${name} -> ${program}"
+        info "  Remediate: verify the vendor/signature and remove the plist if you do not recognize it"
+        info "  Or: add the prefix to KNOWN_AGENTS only after confirming it is expected on your systems"
         echo -e "      ${DIM}File: ${plist}${NC}"
         echo -e "      ${DIM}Modified: $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$plist")${NC}"
       fi
@@ -1062,6 +1066,7 @@ check_ssh_access() {
     key_count=${key_count:-0}
     if [[ "$key_count" -gt 0 ]]; then
       warn "$key_count SSH authorized key(s) — verify these are yours:"
+      info "  Remediate: remove unknown lines from ~/.ssh/authorized_keys and rotate any exposed private keys"
       while read -r line; do
         [[ -z "$line" || "$line" == \#* ]] && continue
         echo "      ${line: -60}"
@@ -1150,6 +1155,7 @@ check_process_integrity() {
     sig_check=$(codesign -dv "$binary" 2>&1 || true)
     if echo "$sig_check" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
       warn "Unsigned/invalid process: PID=$pid $comm"
+      info "  Remediate: inspect the binary with codesign/spctl, then quit or remove it if it is not from a trusted source"
       unsigned_count=$((unsigned_count + 1))
     fi
   done < <(ps -eo pid,args 2>/dev/null | tail -n +2)
@@ -1238,6 +1244,7 @@ check_network_listening() {
         info "LISTEN $addr — ${resolved}${label} (PID ${pid})"
       else
         warn "External-facing listener: $addr — ${resolved} (PID ${pid})"
+        info "  Remediate: verify the owning app/service, then disable it or bind it to localhost if external access is unnecessary"
         external_warn=$((external_warn + 1))
       fi
     else
@@ -2081,6 +2088,7 @@ check_ssh_config() {
   proxy_cmds=$(grep -in 'ProxyCommand' "$ssh_config" 2>/dev/null || true)
   if [[ -n "$proxy_cmds" ]]; then
     warn "SSH ProxyCommand found (potential CVE-2025-61984 vector):"
+    info "  Remediate: remove ProxyCommand entries you do not explicitly need and prefer ProxyJump or direct host entries"
     echo "$proxy_cmds" | while read -r line; do echo "      $line"; done
     issues=true
   fi
@@ -2090,6 +2098,7 @@ check_ssh_config() {
   env_directives=$(grep -in 'SendEnv\|SetEnv' "$ssh_config" 2>/dev/null || true)
   if [[ -n "$env_directives" ]]; then
     warn "SSH environment forwarding configured:"
+    info "  Remediate: remove broad SendEnv/SetEnv directives unless the remote host explicitly requires them"
     echo "$env_directives" | while read -r line; do echo "      $line"; done
     issues=true
   fi
@@ -2108,6 +2117,7 @@ check_ssh_config() {
   strict_check=$(grep -inE 'StrictHostKeyChecking[[:space:]]+no' "$ssh_config" 2>/dev/null || true)
   if [[ -n "$strict_check" ]]; then
     warn "SSH StrictHostKeyChecking disabled — MITM attacks go undetected:"
+    info "  Remediate: set StrictHostKeyChecking ask or yes and reconnect to refresh trusted host keys deliberately"
     echo "$strict_check" | while read -r line; do echo "      $line"; done
     issues=true
   fi
@@ -2118,6 +2128,7 @@ check_ssh_config() {
   null_hosts=$(grep -in 'UserKnownHostsFile[[:space:]].*\/dev\/null' "$ssh_config" 2>/dev/null || true)
   if [[ -n "$null_hosts" ]]; then
     warn "SSH UserKnownHostsFile set to /dev/null — host keys never persisted (MITM risk):"
+    info "  Remediate: remove the /dev/null override so host keys are stored in ~/.ssh/known_hosts"
     echo "$null_hosts" | while read -r line; do echo "      $line"; done
     issues=true
   fi
@@ -2128,6 +2139,7 @@ check_ssh_config() {
   control_path=$(grep -in 'ControlPath[[:space:]].*\/tmp\/' "$ssh_config" 2>/dev/null || true)
   if [[ -n "$control_path" ]]; then
     warn "SSH ControlPath in /tmp — session socket in world-writable dir (hijacking risk):"
+    info "  Remediate: move ControlPath under ~/.ssh or another user-only directory with 700 permissions"
     echo "$control_path" | while read -r line; do echo "      $line"; done
     issues=true
   fi

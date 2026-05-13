@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Mocks `networksetup` for dns_proxy checks.
+# Env: MOCK_NETWORKSETUP=none|socks_enabled (default: none)
+
+mode="${MOCK_NETWORKSETUP:-none}"
+cmd="${1:-}"
+
+case "$cmd" in
+  -listallnetworkservices)
+    cat <<'EOF'
+An asterisk (*) denotes that a network service is disabled.
+Wi-Fi
+EOF
+    ;;
+  -getwebproxy)
+    cat <<'EOF'
+Enabled: No
+Server:
+Port: 0
+Authenticated Proxy Enabled: 0
+EOF
+    ;;
+  -getsocksfirewallproxy)
+    case "$mode" in
+      socks_enabled)
+        cat <<'EOF'
+Enabled: Yes
+Server: 127.0.0.1
+Port: 1080
+Authenticated Proxy Enabled: 0
+EOF
+        ;;
+      *)
+        cat <<'EOF'
+Enabled: No
+Server:
+Port: 0
+Authenticated Proxy Enabled: 0
+EOF
+        ;;
+    esac
+    ;;
+  *)
+    exit 1
+    ;;
+esac

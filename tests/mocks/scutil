@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Mocks `scutil --dns` for dns_proxy checks.
+
+if [[ "${1:-}" == "--dns" ]]; then
+  cat <<'EOF'
+DNS configuration
+resolver #1
+  nameserver[0] : 1.1.1.1
+EOF
+  exit 0
+fi
+
+exit 1

@@ -806,11 +806,13 @@ check_cron_jobs() {
     ok "No user crontab"
   else
     warn "User crontab exists:"
+    info "  Remediate: review each entry with crontab -l and remove anything unexpected via crontab -e"
     echo "$cron_out" | while read -r line; do echo "      $line"; done
   fi
 
   if [[ -f /etc/crontab ]]; then
     warn "/etc/crontab exists"
+    info "  Remediate: inspect /etc/crontab and keep only entries you intentionally installed"
   else
     ok "No /etc/crontab"
   fi
@@ -820,6 +822,7 @@ check_cron_jobs() {
     ok "No at jobs"
   else
     warn "at jobs found:"
+    info "  Remediate: inspect queued jobs with at -c <jobid> and delete unexpected ones with atrm <jobid>"
     echo "$at_out" | while read -r line; do echo "      $line"; done
   fi
 }
@@ -832,6 +835,8 @@ check_mdm_profiles() {
     ok "No MDM/configuration profiles installed"
   else
     warn "Configuration profiles found:"
+    info "  Remediate: verify each profile in System Settings or profiles show -type configuration"
+    info "  Or: remove unneeded profiles with profiles remove -identifier <profile-id>"
     echo "$profiles_out" | while read -r line; do echo "      $line"; done
   fi
 }
@@ -1449,6 +1454,7 @@ check_folder_actions() {
     count=$(find "$fa_dir" -name "*.workflow" -type d 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$count" -gt 0 ]]; then
       warn "$count Folder Action workflow(s) found:"
+      info "  Remediate: open Folder Actions Setup or Automator and remove workflows you do not recognize"
       find "$fa_dir" -name "*.workflow" -type d 2>/dev/null | while read -r w; do
         echo "      $(basename "$w")"
       done
@@ -2203,6 +2209,7 @@ check_path_security() {
   for dir in "${path_dirs[@]}"; do
     if [[ -z "$dir" ]]; then
       fail "Empty PATH entry ('::') — current directory is in PATH"
+      info "  Remediate: remove empty PATH segments from your shell config so '.' is not searched implicitly"
       issues=$((issues + 1))
       continue
     fi
@@ -2214,6 +2221,7 @@ check_path_security() {
           continue ;;
       esac
       warn "PATH directory does not exist: $dir"
+      info "  Remediate: remove stale PATH entries from your shell config or reinstall the missing tool intentionally"
       issues=$((issues + 1))
       continue
     fi
@@ -2223,6 +2231,7 @@ check_path_security() {
     perms=$(stat -f '%Sp' "$dir" 2>/dev/null || true)
     if [[ -n "$perms" && "${perms: -1}" == "w" ]]; then
       warn "World-writable PATH directory: $dir ($perms)"
+      info "  Remediate: tighten permissions with chmod go-w '$dir' or remove the directory from PATH"
       issues=$((issues + 1))
     fi
   done
@@ -2270,6 +2279,7 @@ check_dns_proxy() {
       proxy_server=$(echo "$web_proxy" | grep "Server:" | awk '{print $2}')
       proxy_port=$(echo "$web_proxy" | grep "Port:" | awk '{print $2}')
       warn "Web proxy enabled on $service: $proxy_server:$proxy_port"
+      info "  Remediate: confirm this proxy is expected for $service or disable it in Network settings / networksetup"
       proxy_found=true
     fi
 
@@ -2280,6 +2290,7 @@ check_dns_proxy() {
       socks_server=$(echo "$socks_proxy" | grep "Server:" | awk '{print $2}')
       socks_port=$(echo "$socks_proxy" | grep "Port:" | awk '{print $2}')
       warn "SOCKS proxy enabled on $service: $socks_server:$socks_port"
+      info "  Remediate: disable unexpected SOCKS proxies in Network settings or with: networksetup -setsocksfirewallproxystate \"$service\" off"
       proxy_found=true
     fi
   done <<< "$net_services"

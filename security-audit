@@ -1479,10 +1479,12 @@ check_privileged_helpers() {
     sig=$(codesign -dv "$helper" 2>&1 || true)
     if echo "$sig" | grep -q "code object is not signed\|invalid signature"; then
       fail "Unsigned privileged helper: $name"
+      info "  Remediate: inspect the owning app package and remove or reinstall it from a trusted vendor source"
+      info "  Or: delete the helper only after confirming no legitimate app still depends on it"
       unsigned=$((unsigned + 1))
     else
       local team
-      team=$(echo "$sig" | grep "TeamIdentifier=" | cut -d= -f2)
+      team=$(echo "$sig" | grep "TeamIdentifier=" | cut -d= -f2 || true)
       info "Helper: $name (Team: ${team:-unknown})"
     fi
     checked=$((checked + 1))
@@ -1514,12 +1516,15 @@ check_xprotect_status() {
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if [[ "$age_days" -gt 30 ]]; then
         warn "XProtect data is ${age_days} days old — may be outdated"
+        info "  Remediate: run System Settings > General > Software Update and install all available security data updates"
+        info "  Or: use 'softwareupdate --background-critical' and recheck after network access is restored"
       else
         ok "XProtect data updated ${age_days} day(s) ago"
       fi
     fi
   else
     warn "XProtect bundle not found"
+    info "  Remediate: verify the macOS system volume is intact and reinstall macOS if built-in protections are missing"
   fi
 }
 
@@ -2396,8 +2401,10 @@ check_temp_executables() {
 
       if [[ "$name" == .* ]]; then
         fail "Hidden executable in temp dir: $f (${age_hours}h old)"
+        info "  Remediate: inspect the file contents and owning process, then delete it if it is not part of an active installer/update"
       elif [[ "$age_hours" -lt 24 ]]; then
         warn "Recent executable in temp dir (<24h): $f"
+        info "  Remediate: verify which app created it and remove it if the source or purpose is unclear"
       else
         info "Executable in temp dir: $f (${age_hours}h old)"
       fi
@@ -2421,6 +2428,7 @@ check_sudoers() {
     nopasswd=$(grep -n 'NOPASSWD' /etc/sudoers 2>/dev/null | grep -v '^[[:space:]]*#' || true)
     if [[ -n "$nopasswd" ]]; then
       warn "NOPASSWD entries in /etc/sudoers:"
+      info "  Remediate: remove broad NOPASSWD grants unless they are tightly scoped and intentionally managed"
       echo "$nopasswd" | while read -r line; do echo "      $line"; done
       issues=$((issues + 1))
     fi
@@ -2437,8 +2445,10 @@ check_sudoers() {
       name=$(basename "$f")
       [[ "$name" == "README" ]] && continue
       warn "Custom sudoers file: /etc/sudoers.d/$name"
+      info "  Remediate: audit the owning tool or admin workflow and delete unexpected sudoers.d entries"
       if grep -q 'NOPASSWD' "$f" 2>/dev/null; then
         fail "NOPASSWD in custom sudoers: /etc/sudoers.d/$name"
+        info "  Remediate: replace the NOPASSWD rule with an authenticated sudo policy or remove the file"
       fi
       custom_count=$((custom_count + 1))
       issues=$((issues + 1))
@@ -2455,6 +2465,7 @@ check_sudoers() {
     unusual_pam=$(grep -v '^#' "$pam_sudo" 2>/dev/null | grep 'auth' | grep -v 'pam_smartcard\|pam_opendirectory\|pam_tid\|pam_permit\|sudo_local' || true)
     if [[ -n "$unusual_pam" ]]; then
       warn "Non-default PAM auth module in sudo:"
+      info "  Remediate: compare /etc/pam.d/sudo against a clean macOS system and remove unexpected auth modules"
       echo "$unusual_pam" | while read -r line; do echo "      $line"; done
       issues=$((issues + 1))
     else
@@ -2697,6 +2708,7 @@ check_system_integrity() {
     filetype=$(file -b "$bin" 2>/dev/null || echo "unknown")
     if echo "$filetype" | grep -qiE 'script|text|ascii'; then
       fail "Critical binary replaced by script: $bin ($filetype)"
+      info "  Remediate: compare the file against a clean macOS install and reinstall macOS if a system binary was replaced"
       issues=$((issues + 1))
       continue
     fi
@@ -2706,6 +2718,7 @@ check_system_integrity() {
     sig=$(codesign -dv "$bin" 2>&1 || true)
     if echo "$sig" | grep -q "code object is not signed\|invalid signature\|a sealed resource is missing"; then
       fail "Invalid signature on critical binary: $bin"
+      info "  Remediate: restore the original binary from a trusted macOS reinstall or sealed system update"
       issues=$((issues + 1))
     fi
   done
@@ -2717,6 +2730,7 @@ check_system_integrity() {
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       warn "Recently modified system binary (<7 days): $f"
+      info "  Remediate: confirm the change came from an expected OS or package update; otherwise inspect the package receipt and signature"
       recent_count=$((recent_count + 1))
     done < <(find "$dir" -type f -mtime -7 2>/dev/null)
   done
@@ -2780,6 +2794,7 @@ check_dylib_injection() {
     for pat in "${dyld_patterns[@]}"; do
       if grep -q "$pat" "$f" 2>/dev/null; then
         warn "$pat set in $(basename "$f")"
+        info "  Remediate: remove the ${pat} export from shell startup files unless you intentionally need local development overrides"
         found=$((found + 1))
       fi
     done
@@ -2791,6 +2806,7 @@ check_dylib_injection() {
     dyld_conf=$(grep -i 'DYLD_' /etc/launchd.conf 2>/dev/null || true)
     if [[ -n "$dyld_conf" ]]; then
       fail "DYLD variables in /etc/launchd.conf (system-wide injection):"
+      info "  Remediate: remove the DYLD lines from /etc/launchd.conf and reboot after confirming no legitimate legacy tooling depends on them"
       echo "$dyld_conf" | while read -r line; do echo "      $line"; done
       found=$((found + 1))
     fi
@@ -2803,6 +2819,7 @@ check_dylib_injection() {
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       warn "Suspicious .dylib in non-standard location: $f"
+      info "  Remediate: verify whether the file belongs to a known app build artifact; otherwise quarantine or delete it after inspection"
       found=$((found + 1))
     done < <(find "$dir" -maxdepth 3 -name "*.dylib" -type f 2>/dev/null)
   done

@@ -2204,6 +2204,8 @@ check_path_security() {
   header "PATH Security"
 
   local issues=0
+  local duplicates=0
+  declare -A seen_path_dirs=()
   IFS=':' read -ra path_dirs <<< "$PATH"
 
   for dir in "${path_dirs[@]}"; do
@@ -2213,6 +2215,25 @@ check_path_security() {
       issues=$((issues + 1))
       continue
     fi
+
+    if [[ -n "${seen_path_dirs[$dir]:-}" ]]; then
+      duplicates=$((duplicates + 1))
+      continue
+    fi
+    seen_path_dirs["$dir"]=1
+
+    if [[ "$dir" != /* ]]; then
+      warn "Relative PATH entry: $dir"
+      info "  Remediate: use absolute directories in PATH so command resolution does not depend on the current working directory"
+      issues=$((issues + 1))
+      continue
+    fi
+
+    # Skip transient runner paths that are expected to disappear between sessions.
+    case "$dir" in
+      "$HOME"/.codex/tmp/*|"$HOME"/.cache/node/corepack/*/node-gyp-bin)
+        continue ;;
+    esac
 
     if [[ ! -d "$dir" ]]; then
       # Skip known Apple/system phantom paths
@@ -2235,6 +2256,10 @@ check_path_security() {
       issues=$((issues + 1))
     fi
   done
+
+  if [[ "$duplicates" -gt 0 ]]; then
+    info "Skipped $duplicates duplicate PATH entr$( [[ "$duplicates" -eq 1 ]] && echo "y" || echo "ies" )"
+  fi
 
   if [[ "$issues" -eq 0 ]]; then
     ok "PATH directories look secure"

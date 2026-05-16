@@ -355,6 +355,7 @@ check_firewall_rules() {
     # Check interpreters before path classification so /usr/bin/python3 is flagged.
     if echo "$basename_app" | grep -qE '^(python[0-9.]*|ruby|node|perl|php|bash|zsh|sh|lua|tcl)$'; then
       warn "Interpreter has firewall exception (incoming connections allowed): $app_path"
+      info "  Remediate: System Settings > Network > Firewall > Options — remove the interpreter entry; scripts it runs inherit the exception"
       suspicious=$((suspicious + 1))
       continue
     fi
@@ -368,6 +369,7 @@ check_firewall_rules() {
 
     if ! $is_system; then
       warn "Non-system binary has firewall exception: $app_path"
+      info "  Remediate: System Settings > Network > Firewall > Options — remove the entry if it does not need incoming connections"
       suspicious=$((suspicious + 1))
     else
       info "Firewall exception (system): $basename_app"
@@ -495,6 +497,7 @@ check_sharing_services() {
   # Remote Management ARD control channel (UDP 3283)
   if lsof -i UDP:3283 -nP 2>/dev/null | grep -qi "ARD\|remote"; then
     warn "Remote Management (ARD) appears active on UDP port 3283"
+    info "  Remediate: System Settings > General > Sharing > disable Remote Management"
   fi
 
   # File Sharing (SMB port 445 or AFP port 548)
@@ -726,6 +729,7 @@ check_keychain_security() {
         ;;
       *)
         warn "Non-default keychain: $kc"
+        info "  Remediate: verify with 'security show-keychain-info $kc'; if unexpected, remove with 'security delete-keychain $kc'"
         unusual_count=$((unusual_count + 1))
         ;;
     esac
@@ -874,6 +878,7 @@ check_shell_profiles() {
     for pat in "${suspicious_patterns[@]}"; do
       if grep -qE "$pat" "$f" 2>/dev/null; then
         fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+        info "  Remediate: inspect $f, remove any injected lines, then run: source $f"
         is_suspicious=true
       fi
     done
@@ -888,6 +893,7 @@ check_shell_profiles() {
       for pat in "${suspicious_patterns[@]}"; do
         if grep -qE "$pat" "$f" 2>/dev/null; then
           fail "Suspicious pattern in $f: $(grep -E "$pat" "$f" | head -1)"
+          info "  Remediate: inspect $f, remove the injected line, then reload your shell"
         fi
       done
     done
@@ -902,6 +908,7 @@ check_env_injection() {
   if [[ -n "$dyld_vars" ]]; then
     fail "DYLD injection variables set:"
     echo "$dyld_vars" | while read -r line; do echo "      $line"; done
+    info "  Remediate: unset the variable in your shell (unset DYLD_INSERT_LIBRARIES) and remove any export from shell startup files"
   else
     ok "No DYLD injection variables"
   fi
@@ -910,6 +917,7 @@ check_env_injection() {
   if [[ -n "$proxy_vars" ]]; then
     warn "Proxy variables set (verify these are intentional):"
     echo "$proxy_vars" | while read -r line; do echo "      $line"; done
+    info "  Remediate: if unexpected, run: unset http_proxy https_proxy all_proxy socks_proxy and audit shell startup files"
   else
     ok "No proxy hijack variables"
   fi
@@ -917,6 +925,7 @@ check_env_injection() {
   ld_vars=$(env | grep -iE '^LD_PRELOAD=' 2>/dev/null || true)
   if [[ -n "$ld_vars" ]]; then
     fail "LD_PRELOAD set: $ld_vars"
+    info "  Remediate: unset LD_PRELOAD and remove any export from shell startup files; this variable is macOS-native only if set by legitimate dev tools"
   else
     ok "No LD_PRELOAD"
   fi
@@ -952,6 +961,7 @@ check_auth_plugins() {
   else
     warn "Authorization plugins found:"
     echo "$auth_plugins" | while read -r line; do echo "      $line"; done
+    info "  Remediate: verify each plugin belongs to a known security tool (e.g. 1Password); remove unknown ones from /Library/Security/SecurityAgentPlugins/"
   fi
 }
 
@@ -975,11 +985,13 @@ check_plugin_bundles() {
       authority=$(echo "$sig" | grep "^Authority=" | head -1 | cut -d= -f2- || true)
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "Input Method unsigned: $name ($dir) — potential keylogger"
+        info "  Remediate: remove the bundle from $dir and re-add your IME through the legitimate app installer"
         total_warned=$((total_warned + 1))
       elif ! echo "$authority" | grep -q "Software Signing\|Apple Code Signing"; then
         local team
         team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
         warn "Third-party Input Method: $name (Team: ${team:-unknown}) — has access to all keystrokes"
+        info "  Remediate: confirm this is a deliberately installed IME (e.g. Google Japanese Input); if unknown, remove from System Settings > Keyboard > Input Sources"
         total_warned=$((total_warned + 1))
       else
         info "Apple Input Method: $name"
@@ -1002,9 +1014,11 @@ check_plugin_bundles() {
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "QuickLook plugin unsigned: $name ($dir)"
+        info "  Remediate: remove $name from $dir — unsigned qlgenerators run code on file preview"
         total_warned=$((total_warned + 1))
       elif [[ "$age_days" -lt 30 ]]; then
         warn "QuickLook plugin installed recently (${age_days}d ago): $name (Team: ${team:-unknown})"
+        info "  Remediate: verify it came from the expected app installer; if unknown, remove from $dir"
         total_warned=$((total_warned + 1))
       else
         info "QuickLook plugin: $name (Team: ${team:-unknown})"
@@ -1027,9 +1041,11 @@ check_plugin_bundles() {
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "Spotlight importer unsigned: $name ($dir)"
+        info "  Remediate: remove $name from $dir — unsigned importers run on every Spotlight index pass"
         total_warned=$((total_warned + 1))
       elif [[ "$age_days" -lt 30 ]]; then
         warn "Spotlight importer installed recently (${age_days}d ago): $name (Team: ${team:-unknown})"
+        info "  Remediate: confirm it came from the owning app; if unexpected, remove from $dir"
         total_warned=$((total_warned + 1))
       else
         info "Spotlight importer: $name (Team: ${team:-unknown})"
@@ -1050,9 +1066,11 @@ check_plugin_bundles() {
       team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "Internet Plug-In unsigned: $name ($dir)"
+        info "  Remediate: remove $name from $dir — this legacy plugin API is obsolete and unsigned code here is high-risk"
         total_warned=$((total_warned + 1))
       else
         warn "Internet Plug-In (legacy API): $name (Team: ${team:-unknown})"
+        info "  Remediate: remove if no longer needed (Java, Flash, Silverlight are obsolete); legacy plug-ins rarely have a legitimate modern use"
         total_warned=$((total_warned + 1))
       fi
     done < <(find "$dir" -maxdepth 1 -name "*.plugin" 2>/dev/null || true)
@@ -1120,6 +1138,7 @@ check_ssh_keys() {
     # Deprecated DSA keys (removed from OpenSSH 9.0+, weak at 1024 bits)
     if echo "$header_line" | grep -q "DSA PRIVATE KEY"; then
       warn "Deprecated DSA private key: $key_name — replace with ed25519 or RSA 4096"
+      info "  Remediate: ssh-keygen -t ed25519 -C 'your@email' then update authorized_keys on remote hosts; delete the old key pair"
       found=$((found + 1))
     fi
 
@@ -1127,6 +1146,7 @@ check_ssh_keys() {
     # Suppress all output; a non-zero exit means the key is protected.
     if ssh-keygen -y -P "" -f "$keyfile" &>/dev/null; then
       fail "SSH private key has NO passphrase: $key_name — anyone with filesystem access can use this key"
+      info "  Remediate: ssh-keygen -p -f '$keyfile'  (add a passphrase in-place; uses ssh-agent so you only type it once per session)"
       found=$((found + 1))
     else
       info "SSH private key protected by passphrase: $key_name"
@@ -1434,6 +1454,7 @@ check_periodic_scripts() {
       name=$(basename "$f")
       if [[ ! "$name" =~ ^[0-9]{3}\. ]]; then
         warn "Non-standard periodic script: $f"
+        info "  Remediate: inspect the script contents; if not from a known package, delete it: sudo rm '$f'"
         found=$((found + 1))
       else
         info "Periodic/$period: $name"
@@ -1577,8 +1598,10 @@ check_trusted_certs() {
 
       if $is_proxy; then
         warn "HTTPS interception proxy CA trusted: $cert_name — all TLS traffic can be decrypted"
+        info "  Remediate: if not actively using this proxy tool, remove it with: security delete-certificate -c '$cert_name' ~/Library/Keychains/login.keychain-db"
       else
         warn "Custom trusted certificate: $cert_name — verify this is expected"
+        info "  Remediate: inspect in Keychain Access (login keychain); if unexpected, delete the certificate and review how it was installed"
       fi
       found=$((found + 1))
     done <<< "$user_trust"
@@ -1593,6 +1616,7 @@ check_trusted_certs() {
       local cert_name="${BASH_REMATCH[1]}"
       [[ -z "$cert_name" ]] && continue
       warn "Admin-trusted certificate (system-wide MITM risk): $cert_name"
+      info "  Remediate: open Keychain Access > System keychain; if unexpected, delete the certificate or consult your MDM administrator"
       found=$((found + 1))
     done <<< "$admin_trust"
   fi
@@ -1706,6 +1730,7 @@ check_supply_chain() {
             ;;
           *)
             warn "Non-default brew tap: $tap"
+            info "  Remediate: verify the tap source at https://github.com/$tap; remove with: brew untap $tap if not needed"
             ;;
         esac
       done <<< "$taps"
@@ -1724,6 +1749,7 @@ check_supply_chain() {
       server_count=${server_count:-0}
       if [[ "$server_count" -gt 0 ]]; then
         warn "MCP config with $server_count server(s): $(basename "$(dirname "$mcp_file")")/$(basename "$mcp_file")"
+        info "  Remediate: review each server entry in $mcp_file; MCP servers run with full user-level access — remove any you did not explicitly add"
         grep '"command"' "$mcp_file" 2>/dev/null | while read -r line; do
           echo "      ${line#"${line%%[! ]*}"}"
         done
@@ -1805,6 +1831,7 @@ check_supply_chain() {
     while IFS='|' read -r package_name source_type; do
       [[ -n "$package_name" ]] || continue
       warn "Cargo package from ${source_type} source: $package_name"
+      info "  Remediate: verify the source repo at the URL; if unexpected, run: cargo uninstall $package_name"
     done <<< "$cargo_custom"
   fi
 
@@ -1852,6 +1879,7 @@ check_shell_plugins() {
           age_days=$(( (now_epoch - mod_epoch) / 86400 ))
           if [[ "$age_days" -lt 7 ]]; then
             warn "oh-my-zsh custom plugin installed <7 days ago: $plugin_name"
+            info "  Remediate: inspect $omz_custom/$plugin_name; if unexpected, remove the directory and reload your shell"
             found=$((found + 1))
           else
             info "oh-my-zsh custom plugin: $plugin_name"
@@ -1885,6 +1913,7 @@ check_shell_plugins() {
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if [[ "$age_days" -lt 7 ]]; then
         warn "zinit plugin installed <7 days ago: $(basename "$plugin_dir")"
+        info "  Remediate: inspect $plugin_dir; if unexpected, remove the directory and run: zinit delete $(basename "$plugin_dir")"
         found=$((found + 1))
       fi
     done < <(find "$zinit_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
@@ -1907,6 +1936,7 @@ check_shell_plugins() {
         local author
         author=$(basename "$(dirname "$plugin_dir")")
         warn "zplug plugin installed <7 days ago: ${author}/$(basename "$plugin_dir")"
+        info "  Remediate: inspect $plugin_dir; if unexpected, remove the directory and update your .zshrc zplug entries"
         found=$((found + 1))
       fi
     done < <(find "$zplug_dir" -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
@@ -1950,6 +1980,7 @@ check_ai_agent_hooks() {
         # Suspicious: outbound network, shell eval, or obfuscation
         if echo "$cmd" | grep -qE 'curl|wget|nc |ncat|socat|/dev/tcp|bash -c|sh -c|eval|base64 -d|python.*-c|ruby.*-e|perl.*-e'; then
           fail "Suspicious Claude Code hook command: $cmd"
+          info "  Remediate: edit ~/.claude/settings.json and remove the suspicious hook; audit how it was added to your config"
           found=$((found + 1))
         else
           info "Claude Code hook: $cmd"
@@ -1972,6 +2003,7 @@ check_ai_agent_hooks() {
       if grep -q '"hooks"' "$proj_settings" 2>/dev/null; then
         local rel_path="${proj_settings#"$HOME/"}"
         warn "Project-level Claude Code hooks: ~/$rel_path — verify before running claude in this repo"
+        info "  Remediate: inspect ~/$rel_path hooks before cloning/running Claude in this repo; remove unexpected hook entries"
         proj_hook_count=$((proj_hook_count + 1))
         found=$((found + 1))
       fi
@@ -1989,6 +2021,7 @@ check_ai_agent_hooks() {
       # Classic prompt injection patterns targeting AI models
       if grep -qiE 'ignore (previous|above|prior|all) (instructions?|rules?)|disregard|override.*instructions?|new instruction' "$rule_file" 2>/dev/null; then
         warn "Potential prompt injection in Cursor rule: $(basename "$rule_file")"
+        info "  Remediate: inspect $rule_file and remove the injection-pattern lines; these affect all AI-assisted actions in Cursor"
         found=$((found + 1))
       fi
     done < <(find "$cursor_rules_dir" -type f 2>/dev/null)
@@ -2004,6 +2037,7 @@ check_ai_agent_hooks() {
       info "GitHub Copilot instructions present: $cf"
       if grep -qiE 'ignore (previous|above|prior)|disregard|exfiltrate|send.*to.*http' "$cf" 2>/dev/null; then
         warn "Potential prompt injection in Copilot instructions: $cf"
+        info "  Remediate: inspect $cf; delete the file or remove injection-pattern lines — it is injected into every Copilot request in the repo"
         found=$((found + 1))
       fi
     fi
@@ -2066,6 +2100,7 @@ check_quarantine_events() {
   local found=0
   if [[ -n "$cli_downloads" ]]; then
     warn "Programmatic downloads in the last ${lookback_days} days — verify each was intentional:"
+    info "  Remediate: check your shell history for each URL; CLI downloads bypass Gatekeeper UI — delete any you did not initiate"
     while IFS='|' read -r agent url timestamp; do
       [[ -z "$url" ]] && continue
       echo -e "      ${DIM}[${timestamp}] ${agent}: ${url}${NC}"
@@ -2168,6 +2203,7 @@ check_git_hooks() {
   global_hooks=$(git config --global core.hooksPath 2>/dev/null || true)
   if [[ -n "$global_hooks" ]]; then
     warn "Global git hooks path: $global_hooks"
+    info "  Remediate: verify each hook is intentional; to remove the global path: git config --global --unset core.hooksPath"
     if [[ -d "$global_hooks" ]]; then
       for hook in "$global_hooks"/*; do
         [[ -x "$hook" ]] || continue
@@ -2333,6 +2369,7 @@ check_time_sync() {
   timed_pid=$(pgrep -x timed 2>/dev/null || true)
   if [[ -z "$timed_pid" ]]; then
     fail "timed not running — NTP synchronization disabled (time-based auth bypass risk)"
+    info "  Remediate: sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.timed.plist  (or reboot)"
   else
     info "timed running (PID $timed_pid)"
   fi
@@ -2343,6 +2380,7 @@ check_time_sync() {
     custom_servers=$(grep -v '^\s*#' /etc/ntp_opendirectory.conf | grep -v '^\s*$' | grep -v 'opendirectory peers' || true)
     if [[ -n "$custom_servers" ]]; then
       warn "Non-default entries in /etc/ntp_opendirectory.conf:"
+      info "  Remediate: review the entries; unless managed by your network's OD, restore defaults: sudo rm /etc/ntp_opendirectory.conf"
       echo "$custom_servers" | while read -r line; do
         echo "      $line"
       done
@@ -2356,6 +2394,7 @@ check_time_sync() {
     while IFS= read -r -d '' plist; do
       if grep -qi "ntp\|sntpd\|timed" "$plist" 2>/dev/null; then
         warn "NTP-related launch entry: $plist"
+        info "  Remediate: inspect $plist; if not from a known tool, disable it with: launchctl bootout gui/$UID $plist"
         user_ntp_agents=$((user_ntp_agents + 1))
       fi
     done < <(find "$dir" -name "*.plist" -print0 2>/dev/null)
@@ -2365,7 +2404,7 @@ check_time_sync() {
   local sntp_out offset_raw offset_abs
   sntp_out=$(timeout 5 sntp time.apple.com 2>/dev/null || true)
   if [[ -z "$sntp_out" ]]; then
-    warn "Could not reach time.apple.com to measure offset"
+    warn "Could not reach time.apple.com to measure offset — check network connectivity or DNS resolution"
   else
     offset_raw=$(echo "$sntp_out" | awk '{print $1}')
     # Strip leading +/- for absolute value comparison using awk
@@ -2373,8 +2412,10 @@ check_time_sync() {
     # Thresholds: >60s = critical (TOTP bypass, cert replay); >5s = warning (unusual drift)
     if awk "BEGIN {exit !($offset_abs > 60)}"; then
       fail "Time offset from Apple NTP: ${offset_raw}s — exceeds 60s threshold (TOTP/cert bypass risk)"
+      info "  Remediate: sudo sntp -sS time.apple.com  (force immediate NTP sync) and verify timed is running"
     elif awk "BEGIN {exit !($offset_abs > 5)}"; then
       warn "Time offset from Apple NTP: ${offset_raw}s — unusual drift (expected < 5s)"
+      info "  Remediate: sudo sntp -sS time.apple.com  (force sync) or check System Settings > General > Date & Time"
     else
       ok "Time offset from Apple NTP: ${offset_raw}s"
     fi
@@ -2399,6 +2440,7 @@ check_suspicious_ports() {
         proc=$(echo "$line" | awk '{print $1}')
         pid=$(echo "$line" | awk '{print $2}')
         fail "Suspicious port $port: $proc (PID $pid)"
+        info "  Remediate: identify the process with: lsof -p $pid; kill it if unexpected and check persistence via launch_agents check"
         found=$((found + 1))
       done <<< "$matches"
     fi
@@ -2569,6 +2611,7 @@ check_browser_extensions() {
         local ext_name
         ext_name=$(_resolve_chromium_ext_name "$ext")
         warn "Chrome extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
+        info "  Remediate: verify you deliberately installed this — open chrome://extensions and inspect or remove if unknown"
         recent=$((recent + 1))
       fi
     done < <(find "$chrome_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
@@ -2592,6 +2635,7 @@ check_browser_extensions() {
         local ext_name
         ext_name=$(_resolve_chromium_ext_name "$ext")
         warn "Brave extension installed/updated <7 days ago: ${ext_name} ($(basename "$ext"))"
+        info "  Remediate: open brave://extensions to verify or remove if you do not recognize this extension"
         recent=$((recent + 1))
       fi
     done < <(find "$brave_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
@@ -2645,6 +2689,7 @@ check_hidden_files() {
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       warn "Hidden file in temp dir: $f"
+      info "  Remediate: inspect the file (file '$f'; xxd '$f' | head) and delete it if not part of an active process"
       found=$((found + 1))
     done < <(find "$dir" -maxdepth 2 -name ".*" -type f 2>/dev/null | head -20)
   done
@@ -2696,6 +2741,7 @@ check_reverse_shells() {
         local dest
         dest=$(echo "$fd_check" | head -1 | awk '{print $9}')
         fail "Shell ($shell) with stdin/stdout on network socket: PID=$pid -> $dest"
+        info "  Remediate: kill $pid immediately; inspect persistence (LaunchAgents, cron, shell profiles) and rotate any credentials"
         found=$((found + 1))
       fi
     done < <(pgrep -x "$shell" 2>/dev/null || true)
@@ -2712,6 +2758,7 @@ check_reverse_shells() {
         local dest
         dest=$(echo "$conns" | head -1 | awk '{print $9}')
         fail "$tool with established connection: PID=$pid -> $dest"
+        info "  Remediate: kill $pid; verify the connection was intentional; check LaunchAgents and cron for re-spawn mechanisms"
         found=$((found + 1))
       fi
     done < <(pgrep -x "$tool" 2>/dev/null || true)
@@ -2902,6 +2949,7 @@ check_dns_tunneling() {
 
   if [[ "$dns_query_count" -gt 500 ]]; then
     warn "High DNS query volume in last 5 minutes: $dns_query_count queries (possible DNS tunneling)"
+    info "  Remediate: identify the top process below and use 'lsof -p <pid> -i' to inspect its connections; block at DNS/firewall if unexpected"
     found=$((found + 1))
 
     # Break down by process so the user can investigate
@@ -2920,6 +2968,7 @@ check_dns_tunneling() {
     info "Unique domains queried: ~${unique_names}"
     if [[ "$unique_names" -gt 200 ]]; then
       warn "Very high domain diversity (${unique_names} unique) — typical of DNS tunneling or heavy browsing"
+      info "  Remediate: correlate with the top process above; if legitimate, add a dns_tunneling exception in config; otherwise block the process and investigate"
     fi
   else
     info "DNS query volume in last 5 minutes: $dns_query_count queries"
@@ -2953,6 +3002,7 @@ check_recently_modified() {
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
       warn "Recently modified admin-writable executable/library (<7 days): $f"
+      info "  Remediate: run 'codesign -dv $f' and check 'pkgutil --file-info $f' to verify the change came from a known package update"
       found=$((found + 1))
     done < <(find "$dir" -type f -mtime -7 \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) 2>/dev/null | head -20)
   done
@@ -3000,6 +3050,7 @@ check_process_spoofing() {
     # Flag: comm suggests Apple but binary is outside /System
     if [[ "$comm" == com.apple.* && "$binary" != /System/* && "$binary" != /usr/libexec/* && "$binary" != /usr/sbin/* ]]; then
       fail "Process name spoofing: comm=$comm but binary=$binary (PID $pid)"
+      info "  Remediate: kill $pid immediately; inspect persistence (launch_agents, cron) and the binary at $binary; consider full incident response"
       found=$((found + 1))
     fi
   done < <(ps -eo pid,comm,args 2>/dev/null | tail -n +2)
@@ -3026,6 +3077,7 @@ check_promiscuous_interfaces() {
       iface_status=$(ifconfig "$current_iface" 2>/dev/null | grep "status:" || true)
       if [[ "$iface_status" == *"status: active"* ]]; then
         warn "Active interface in promiscuous mode: $current_iface (packet sniffing)"
+        info "  Remediate: identify the tool that enabled it (Wireshark, tcpdump, packet sniffers); if unexpected, remove the tool and reboot"
         found=true
       fi
     fi
@@ -3059,6 +3111,7 @@ check_deleted_running() {
       local proc_name
       proc_name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
       warn "Process binary no longer on disk: $proc_name (PID $pid) -> $binary"
+      info "  Remediate: inspect the process with 'lsof -p $pid'; if malicious, kill it and check LaunchAgents/cron for re-spawn"
       found=$((found + 1))
     fi
   done < <(ps -eo pid,args 2>/dev/null | tail -n +2)

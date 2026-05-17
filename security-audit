@@ -982,14 +982,14 @@ check_plugin_bundles() {
       local name sig authority
       name=$(basename "$item")
       sig=$(codesign -dv "$item" 2>&1 || true)
-      authority=$(echo "$sig" | grep "^Authority=" | head -1 | cut -d= -f2- || true)
+      authority=$(_codesign_field "$sig" "Authority")
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "Input Method unsigned: $name ($dir) — potential keylogger"
         info "  Remediate: remove the bundle from $dir and re-add your IME through the legitimate app installer"
         total_warned=$((total_warned + 1))
       elif ! echo "$authority" | grep -q "Software Signing\|Apple Code Signing"; then
         local team
-        team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+        team=$(_codesign_field "$sig" "TeamIdentifier")
         warn "Third-party Input Method: $name (Team: ${team:-unknown}) — has access to all keystrokes"
         info "  Remediate: confirm this is a deliberately installed IME (e.g. Google Japanese Input); if unknown, remove from System Settings > Keyboard > Input Sources"
         total_warned=$((total_warned + 1))
@@ -1009,7 +1009,7 @@ check_plugin_bundles() {
       local name sig team mod_epoch age_days
       name=$(basename "$item")
       sig=$(codesign -dv "$item" 2>&1 || true)
-      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      team=$(_codesign_field "$sig" "TeamIdentifier")
       mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
@@ -1036,7 +1036,7 @@ check_plugin_bundles() {
       local name sig team mod_epoch age_days
       name=$(basename "$item")
       sig=$(codesign -dv "$item" 2>&1 || true)
-      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      team=$(_codesign_field "$sig" "TeamIdentifier")
       mod_epoch=$(stat -f '%m' "$item" 2>/dev/null || echo 0)
       age_days=$(( (now_epoch - mod_epoch) / 86400 ))
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
@@ -1063,7 +1063,7 @@ check_plugin_bundles() {
       local name sig team
       name=$(basename "$item")
       sig=$(codesign -dv "$item" 2>&1 || true)
-      team=$(echo "$sig" | grep "^TeamIdentifier=" | cut -d= -f2 || true)
+      team=$(_codesign_field "$sig" "TeamIdentifier")
       if echo "$sig" | grep -q "not signed\|invalid signature"; then
         fail "Internet Plug-In unsigned: $name ($dir)"
         info "  Remediate: remove $name from $dir — this legacy plugin API is obsolete and unsigned code here is high-risk"
@@ -1344,6 +1344,12 @@ _identify_process() {
   esac
 }
 
+_codesign_field() {
+  local sig="$1"
+  local field="$2"
+  awk -F= -v key="$field" '$1 == key { print substr($0, length(key) + 2); exit }' <<< "$sig"
+}
+
 _resolve_process_name() {
   # Resolve a PID to a more descriptive name from full args
   local pid="$1"
@@ -1511,7 +1517,7 @@ check_privileged_helpers() {
       unsigned=$((unsigned + 1))
     else
       local team
-      team=$(echo "$sig" | grep "TeamIdentifier=" | cut -d= -f2 || true)
+      team=$(_codesign_field "$sig" "TeamIdentifier")
       info "Helper: $name (Team: ${team:-unknown})"
     fi
     checked=$((checked + 1))

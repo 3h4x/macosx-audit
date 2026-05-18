@@ -1657,6 +1657,34 @@ _check_recent_installs() {
   if [[ "$recent" -eq 0 ]]; then ok "No recently installed ${plural}"; fi
 }
 
+_json_string_field() {
+  local file="$1"
+  local key="$2"
+  awk -v key="$key" '
+    match($0, "\"" key "\"[[:space:]]*:[[:space:]]*\"") {
+      value = substr($0, RSTART + RLENGTH)
+      sub(/".*/, "", value)
+      print value
+      exit
+    }
+  ' "$file" 2>/dev/null
+}
+
+_json_locale_message() {
+  local file="$1"
+  local key="$2"
+  awk -v key="$key" '
+    $0 ~ "\"" key "\"[[:space:]]*:" { in_key = 1 }
+    in_key && match($0, /"message"[[:space:]]*:[[:space:]]*"/) {
+      value = substr($0, RSTART + RLENGTH)
+      sub(/".*/, "", value)
+      print value
+      exit
+    }
+    in_key && /^[[:space:]]*}[[:space:]]*,?[[:space:]]*$/ { in_key = 0 }
+  ' "$file" 2>/dev/null
+}
+
 _list_cargo_packages() {
   if command -v cargo &>/dev/null; then
     cargo install --list 2>/dev/null | awk '
@@ -2571,7 +2599,7 @@ _resolve_chromium_ext_name() {
   manifest="$ver_dir/manifest.json"
   [[ ! -f "$manifest" ]] && echo "unknown" && return
 
-  name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$manifest" 2>/dev/null | head -1 | sed 's/"name"[[:space:]]*:[[:space:]]*"//;s/"$//')
+  name=$(_json_string_field "$manifest" "name")
   if [[ "$name" == __MSG_* ]]; then
     msg_key="${name#__MSG_}"
     msg_key="${msg_key%__}"
@@ -2579,7 +2607,7 @@ _resolve_chromium_ext_name() {
       msgs="$locale_dir/messages.json"
       [[ -f "$msgs" ]] || continue
       local resolved
-      resolved=$(grep -A2 "\"$msg_key\"" "$msgs" 2>/dev/null | grep '"message"' | head -1 | sed 's/.*"message"[[:space:]]*:[[:space:]]*"//;s/".*//')
+      resolved=$(_json_locale_message "$msgs" "$msg_key")
       if [[ -n "$resolved" ]]; then
         echo "$resolved"
         return

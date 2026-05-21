@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mocks `log show` for dns_tunneling check.
-# Env: MOCK_LOG=empty|high_volume (default: empty)
+# Env: MOCK_LOG=empty|high_volume|stderr (default: empty)
 
 FIXTURE_DIR="${FIXTURE_DIR:-$(cd "$(dirname "$0")/../fixtures" && pwd)}"
 
@@ -12,4 +12,8 @@ fi
 case "${MOCK_LOG:-empty}" in
   empty) ;;
   high_volume) cat "$FIXTURE_DIR/dns_logs_high_volume.txt" ;;
+  stderr)
+    echo "log: failed to collect entries" >&2
+    exit 1
+    ;;
 esac

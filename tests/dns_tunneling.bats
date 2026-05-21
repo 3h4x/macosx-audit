@@ -16,6 +16,14 @@ load 'helpers/common'
   assert_output_not_contains "[!]"
 }
 
+@test "dns_tunneling: log stderr failure -> stderr is not counted as DNS logs" {
+  MOCK_LSOF_DNS=empty MOCK_LOG=stderr run_check dns_tunneling
+  [ "$status" -eq 0 ]
+  assert_output_contains "[OK]"
+  assert_output_not_contains "log: failed to collect entries"
+  assert_output_not_contains "[!]"
+}
+
 # Detection: high query volume triggers warning
 @test "dns_tunneling: >500 DNS queries → [!] warning" {
   MOCK_LSOF_DNS=empty MOCK_LOG=high_volume run_check dns_tunneling

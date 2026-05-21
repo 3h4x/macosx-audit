@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Mocks `sntp time.apple.com` for time_sync checks.
+# Env: MOCK_SNTP=ok|drift|huge|empty|stderr|hang (default: ok)
+
+case "${MOCK_SNTP:-ok}" in
+  ok)
+    echo "+0.4 time.apple.com"
+    ;;
+  drift)
+    echo "+12.7 time.apple.com"
+    ;;
+  huge)
+    echo "-120.0 time.apple.com"
+    ;;
+  empty)
+    exit 1
+    ;;
+  stderr)
+    echo "sntp: Exchange failed: nodename nor servname provided" >&2
+    exit 1
+    ;;
+  hang)
+    sleep 20
+    ;;
+esac

@@ -36,6 +36,54 @@ warn() { echo -e "  ${YELLOW}[!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+
 fail() { echo -e "  ${RED}[!!]${NC} $1"; WARNINGS=$((WARNINGS + 1)); FINDINGS+=("[CRITICAL] $1"); }
 info() { echo -e "  ${DIM}[-]${NC} $1"; }
 
+_run_with_timeout() {
+  local seconds="$1"
+  shift
+
+  local tmp_output tmp_timed_out cmd_pid timer_pid exit_code monitor_was_on
+  tmp_output=$(mktemp "${TMPDIR:-/tmp}/macosx-audit.timeout.XXXXXX")
+  tmp_timed_out="${tmp_output}.timedout"
+
+  monitor_was_on=0
+  case $- in
+    *m*) monitor_was_on=1 ;;
+  esac
+  set -m
+
+  "$@" >"$tmp_output" &
+  cmd_pid=$!
+
+  (
+    sleep "$seconds"
+    if kill -TERM "-$cmd_pid" 2>/dev/null; then
+      printf '1' >"$tmp_timed_out"
+      sleep 1
+      kill -KILL "-$cmd_pid" 2>/dev/null || true
+    fi
+  ) >/dev/null 2>&1 &
+  timer_pid=$!
+
+  if wait "$cmd_pid" 2>/dev/null; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+  kill -TERM "-$timer_pid" 2>/dev/null || kill -TERM "$timer_pid" 2>/dev/null || true
+  wait "$timer_pid" 2>/dev/null || true
+  if [[ "$monitor_was_on" -eq 0 ]]; then
+    set +m
+  fi
+
+  if [[ -f "$tmp_timed_out" ]]; then
+    exit_code=124
+  fi
+
+  cat "$tmp_output"
+  rm -f "$tmp_output" "$tmp_timed_out"
+
+  return "$exit_code"
+}
+
 # ─── Check registry ───
 
 CHECKS=(system_hardening firewall_rules firmware_security sharing_services user_accounts screensaver keychain_security launch_agents cron_jobs mdm_profiles shell_profiles
@@ -2434,9 +2482,10 @@ check_time_sync() {
     done < <(find "$dir" -name "*.plist" -print0 2>/dev/null)
   done
 
-  # Measure time offset against Apple's NTP server (5s timeout)
+  # Measure time offset against Apple's NTP server. macOS does not ship GNU timeout,
+  # so use the internal wrapper to keep the script dependency-free.
   local sntp_out offset_raw offset_abs
-  sntp_out=$(timeout 5 sntp time.apple.com 2>/dev/null || true)
+  sntp_out=$(_run_with_timeout 5 sntp time.apple.com 2>/dev/null || true)
   if [[ -z "$sntp_out" ]]; then
     warn "Could not reach time.apple.com to measure offset — check network connectivity or DNS resolution"
   else
@@ -2978,7 +3027,7 @@ check_dns_tunneling() {
   # Check for unusually high DNS query volume (last 5 minutes)
   # Count actual query STARTs (not all log lines — each lookup generates 4-8 lines)
   local dns_logs dns_query_count
-  dns_logs=$(timeout 10 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null || true)
+  dns_logs=$(_run_with_timeout 10 log show --predicate 'process == "mDNSResponder"' --last 5m --style compact 2>/dev/null || true)
   dns_query_count=$(echo "$dns_logs" | grep -c 'DNSServiceQueryRecord START' || true)
 
   if [[ "$dns_query_count" -gt 500 ]]; then

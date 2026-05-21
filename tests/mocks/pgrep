@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mocks `pgrep -x timed` for time_sync checks.
+# Env: MOCK_PGREP=timed|none (default: timed)
+
+if [[ "${1:-}" == "-x" && "${2:-}" == "timed" ]]; then
+  case "${MOCK_PGREP:-timed}" in
+    timed)
+      echo "123"
+      exit 0
+      ;;
+    none)
+      exit 1
+      ;;
+  esac
+fi
+
+exit 1

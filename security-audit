@@ -982,6 +982,8 @@ check_env_injection() {
 check_extensions() {
   header "Kernel & System Extensions"
 
+  local kext_count sysext_out sysext_status sysext_lines
+
   kext_count=$(find /Library/Extensions -maxdepth 1 -name '*.kext' -type d 2>/dev/null | wc -l | tr -d ' ' || true)
   kext_count=${kext_count:-0}
   if [[ "$kext_count" -gt 0 ]]; then
@@ -991,12 +993,40 @@ check_extensions() {
     ok "No third-party kernel extensions"
   fi
 
-  sysext_out=$(systemextensionsctl list 2>&1)
+  if ! command -v systemextensionsctl &>/dev/null; then
+    info "systemextensionsctl not available — skipping system extension inventory"
+    return
+  fi
+
+  if sysext_out=$(systemextensionsctl list 2>&1); then
+    sysext_status=0
+  else
+    sysext_status=$?
+  fi
+
+  if [[ "$sysext_status" -ne 0 ]]; then
+    info "systemextensionsctl returned error (${sysext_status}) — skipping system extension inventory"
+    if [[ -n "$sysext_out" ]]; then
+      info "  systemextensionsctl: $(echo "$sysext_out" | head -1)"
+    fi
+    return
+  fi
+
+  if [[ -z "$sysext_out" ]]; then
+    info "systemextensionsctl returned no output — unable to inventory system extensions"
+    return
+  fi
+
   if echo "$sysext_out" | grep -q "0 extension"; then
     ok "No system extensions"
   else
-    info "System extensions:"
-    echo "$sysext_out" | grep -E "^\*|bundleID" | while read -r line; do echo "      $line"; done
+    sysext_lines=$(echo "$sysext_out" | grep -E "^\*|bundleID" || true)
+    if [[ -n "$sysext_lines" ]]; then
+      info "System extensions:"
+      echo "$sysext_lines" | while read -r line; do echo "      $line"; done
+    else
+      info "System extensions present, but systemextensionsctl output format was unrecognized"
+    fi
   fi
 }
 

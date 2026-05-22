@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Mocks `systemextensionsctl list` for extensions check.
+# Env: MOCK_SYSTEMEXTENSIONSCTL=zero|present|error|empty (default: zero)
+
+mode="${MOCK_SYSTEMEXTENSIONSCTL:-zero}"
+cmd="${1:-}"
+
+if [[ "$cmd" != "list" ]]; then
+  exit 1
+fi
+
+case "$mode" in
+  zero)
+    echo "0 extension(s)"
+    ;;
+  present)
+    cat <<'EOF'
+1 extension(s)
+* com.example.driver [activated enabled]
+bundleID: com.example.driver
+EOF
+    ;;
+  empty)
+    ;;
+  error)
+    echo "systemextensionsctl: list command failed: The operation couldn’t be completed. (OSSystemExtensionErrorDomain error 1.)"
+    exit 69
+    ;;
+  *)
+    echo "unexpected MOCK_SYSTEMEXTENSIONSCTL mode: $mode" >&2
+    exit 1
+    ;;
+esac
